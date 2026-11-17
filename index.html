@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; connect-src 'self' https://ipapi.co https://router.project-osrm.org https://fzbptuewtgilcciezfdb.supabase.co wss://fzbptuewtgilcciezfdb.supabase.co;" />
+  <title>Koronadal Ride</title>
+  <meta name="theme-color" content="#16284a" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Koronadal Ride" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="vendor/leaflet.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="phone">
+    <header class="topbar" id="topbar">
+      <div class="topbar-row">
+        <button class="back-btn" id="backBtn" aria-label="Back" hidden>‹</button>
+        <div>
+          <div class="brand">Koronadal Ride</div>
+          <div class="brand-sub" id="brandSub">Your local route companion</div>
+        </div>
+      </div>
+    </header>
+
+    <main class="screen" id="screen"></main>
+
+    <nav class="bottom-nav" id="bottomNav" hidden>
+      <button data-nav="home"><span class="nav-icon">⌂</span>Home</button>
+      <button data-nav="explore"><span class="nav-icon">◎</span>Explore</button>
+      <button data-nav="saved"><span class="nav-icon">♡</span>Saved</button>
+      <button data-nav="profile"><span class="nav-icon">◯</span>Profile</button>
+    </nav>
+
+    <div class="toast" id="toast" hidden></div>
+    <div class="sheet-backdrop" id="sheet" hidden>
+      <div class="sheet" id="sheetBody"></div>
+    </div>
+  </div>
+
+  <script src="vendor/leaflet.js"></script>
+  <script src="vendor/supabase.js"></script>
+  <script src="data.js"></script>
+  <script src="supabase.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
