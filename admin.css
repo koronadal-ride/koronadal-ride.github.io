@@ -82,3 +82,5 @@ td input.num { width: 84px; }
 @media (max-width: 480px) {
   .grid { grid-template-columns: 1fr !important; }
 }
+.pager { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.pager .btn.sm { min-width: 34px; justify-content: center; }

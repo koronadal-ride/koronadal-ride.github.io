@@ -217,6 +217,8 @@
 
   // Places
   const CATS = ['popular', 'landmarks', 'terminals', 'malls', 'schools', 'hospitals', 'barangays'];
+  const PAGE_SIZE = 10;
+  let placesPage = 1;
   SECTIONS.places = async (main) => {
     main.innerHTML = '<h1>Places</h1><p class="lead">Loading…</p>';
     const { data, error } = await sb.from('places').select('*').order('name');
@@ -226,11 +228,25 @@
       <h1>Places</h1><p class="lead">Destinations passengers can choose. Tap the map to set a new place's position.</p>
       <div class="row" style="margin-bottom:14px"><input class="search" id="q" placeholder="Search places" /><span class="muted small">${data.length} places</span><span style="flex:1"></span><button class="btn" id="add">+ Add place</button></div>
       <div id="editor"></div>
-      <div class="card" style="overflow:auto"><table><thead><tr><th>Name</th><th>Description</th><th>Categories</th><th>Road</th><th>Coordinates</th><th>Active</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>`;
+      <div class="card" style="overflow:auto"><table><thead><tr><th>Name</th><th>Description</th><th>Categories</th><th>Road</th><th>Coordinates</th><th>Active</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
+      <div class="pager" id="pager"></div>`;
     const rows = $('#rows');
     const draw = () => {
       const q = query.toLowerCase();
-      rows.innerHTML = data.filter((p) => !q || p.name.toLowerCase().includes(q) || (p.sub || '').toLowerCase().includes(q)).map((p) => `<tr>
+      const found = data.filter((p) => !q || p.name.toLowerCase().includes(q) || (p.sub || '').toLowerCase().includes(q));
+      const pages = Math.max(1, Math.ceil(found.length / PAGE_SIZE));
+      placesPage = Math.min(Math.max(1, placesPage), pages);
+      const first = (placesPage - 1) * PAGE_SIZE;
+      const shown = found.slice(first, first + PAGE_SIZE);
+      const pager = $('#pager');
+      pager.innerHTML = `<span class="muted small">${found.length ? `Showing ${first + 1}–${first + shown.length} of ${found.length}` : 'No places match your search'}</span><span style="flex:1"></span>`
+        + (pages > 1
+          ? `<button class="btn sm outline" data-page="${placesPage - 1}" ${placesPage === 1 ? 'disabled' : ''}>‹ Prev</button>`
+            + Array.from({ length: pages }, (_, i) => `<button class="btn sm ${i + 1 === placesPage ? '' : 'outline'}" data-page="${i + 1}">${i + 1}</button>`).join('')
+            + `<button class="btn sm outline" data-page="${placesPage + 1}" ${placesPage === pages ? 'disabled' : ''}>Next ›</button>`
+          : '');
+      $$('[data-page]', pager).forEach((b) => b.addEventListener('click', () => { placesPage = Number(b.dataset.page); draw(); }));
+      rows.innerHTML = shown.map((p) => `<tr>
         <td><strong>${esc(p.name)}</strong></td><td>${esc(p.sub)}</td><td class="small">${(p.cat || []).join(', ')}</td><td class="small">${esc(p.road)}</td>
         <td class="small muted">${Number(p.lat).toFixed(4)}, ${Number(p.lng).toFixed(4)}</td>
         <td>${p.active ? '<span class="pill green">Yes</span>' : '<span class="pill grey">Hidden</span>'}</td>
@@ -243,7 +259,7 @@
         if (e2) return fail(e2); toast('Place deleted'); SECTIONS.places(main);
       }));
     };
-    $('#q').addEventListener('input', (e) => { query = e.target.value; draw(); });
+    $('#q').addEventListener('input', (e) => { query = e.target.value; placesPage = 1; draw(); });
     $('#add').addEventListener('click', () => editor(null));
 
     let map = null;
