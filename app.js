@@ -290,17 +290,41 @@
   const fmtKm = (km) => (km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`);
 
   // Live location
+  const isStandalone = () => (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  const platform = () => {
+    const ua = navigator.userAgent || '';
+    if (/iPhone|iPad|iPod/i.test(ua) || (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1)) return 'ios';
+    if (/Android/i.test(ua)) return 'android';
+    return 'desktop';
+  };
   function locationHelpSheet() {
+    const app = isStandalone();
+    const steps = {
+      android: [
+        'Swipe down from the top of the screen and turn on <strong>Location</strong>.',
+        'Open the phone <strong>Settings → Apps → Chrome → Permissions → Location</strong>. Choose <strong>Allow only while using the app</strong> and turn on <strong>Use precise location</strong>.',
+        app
+          ? 'Press and hold the <strong>Koronadal Ride</strong> icon → <strong>App info</strong> (or <strong>Site settings</strong>) → <strong>Permissions → Location → Allow</strong>.'
+          : 'In Chrome, tap the icon at the left of the address bar → <strong>Permissions → Location → Allow</strong>.',
+        'Go outdoors or near a window and wait a few seconds for the GPS to settle.'
+      ],
+      ios: [
+        'Open <strong>Settings → Privacy &amp; Security → Location Services</strong> and turn it on.',
+        'In the same list, tap <strong>Safari Websites</strong>. Choose <strong>While Using the App</strong> and turn on <strong>Precise Location</strong>.',
+        app ? 'Close Koronadal Ride completely, open it again and tap <strong>Allow</strong> when it asks for your location.' : 'Reload this page and tap <strong>Allow</strong> when Safari asks for your location.',
+        'Go outdoors or near a window and wait a few seconds for the GPS to settle.'
+      ],
+      desktop: [
+        'Click the icon at the left of the address bar → <strong>Site settings</strong> → set <strong>Location</strong> to <strong>Allow</strong>, then reload this page.',
+        '<strong>Mac:</strong> System Settings → Privacy &amp; Security → Location Services → turn it on and tick your browser.',
+        'A laptop has no GPS, so its position comes from Wi-Fi and may be off by a few hundred metres. Use ✎ on the map for an exact starting point.'
+      ]
+    }[platform()];
     openSheet(
-      `<h3>Turn location back on</h3>
-       <p class="muted small" style="margin:0 0 10px">Your browser is blocking location for this site. To allow it:</p>
-       <ol class="tips-list" style="margin-bottom:14px">
-         <li><strong>Chrome on a laptop:</strong> click the icon at the left of the address bar → <strong>Site settings</strong> → set <strong>Location</strong> to <strong>Allow</strong>, then reload this page.</li>
-         <li><strong>Mac:</strong> System Settings → Privacy &amp; Security → Location Services → make sure it is on and Google Chrome is ticked.</li>
-         <li><strong>Android:</strong> tap the lock icon next to the address → Permissions → Location → Allow.</li>
-         <li><strong>iPhone:</strong> Settings → Safari → Location → Allow, and Settings → Privacy → Location Services on.</li>
-       </ol>
-       <button class="btn" id="lhRetry">Retry</button>
+      `<h3>Get an accurate location</h3>
+       <p class="muted small" style="margin:0 0 10px">The app needs the device's precise location. Check these in order:</p>
+       <ol class="tips-list" style="margin-bottom:14px">${steps.map((t) => `<li>${t}</li>`).join('')}</ol>
+       <button class="btn" id="lhRetry">Try again</button>
        <button class="btn outline" id="lhManual">Set my location on the map instead</button>`,
       (root) => {
         $('#lhRetry', root).onclick = () => { closeSheet(); Loc.useDevice(); };
@@ -313,82 +337,163 @@
     source: null,
     status: 'idle',
     error: '',
+    lastError: '',
     watchId: null,
+    coarseId: null,
+    restarts: 0,
+    fixAt: 0,
+    shown: null,
+    shownAt: 0,
+    deniedAt: 0,
+    ipPos: null,
+    fellBack: false,
+    held: false,
+    heldAt: 0,
+    selectAt: 0,
+    selectEl: null,
+    pending: false,
     listeners: new Set(),
 
     on(fn) {
       this.listeners.add(fn);
       return () => this.listeners.delete(fn);
     },
+    busy() {
+      const now = Date.now();
+      if (this.held && now - this.heldAt < 8000) return true;
+      const a = document.activeElement;
+      if (!a || a.tagName !== 'SELECT') { this.selectEl = null; return false; }
+      if (this.selectEl !== a) { this.selectEl = a; this.selectAt = now; }
+      return now - this.selectAt < 15000;
+    },
     emit() {
+      if (this.busy()) { this.pending = true; return; }
+      this.pending = false;
+      this.shown = this.pos ? { ...this.pos } : null;
+      this.shownAt = Date.now();
       this.listeners.forEach((fn) => {
         try { fn(this); } catch (err) { console.error(err); }
       });
     },
+    flush() {
+      if (this.pending) this.emit();
+    },
     setPos(lat, lng, accuracy, source) {
+      const wasLive = this.source === 'gps' && this.status === 'ok';
       if (source === 'gps') this.lastError = '';
       this.pos = { lat, lng, accuracy: accuracy || null };
       this.source = source;
       this.status = 'ok';
       this.error = '';
+      if (source === 'gps' && wasLive && this.shown && !this.pending) {
+        const moved = D.haversineKm(this.shown, this.pos) * 1000;
+        const before = this.shown.accuracy || 0;
+        const steady = Math.abs(before - (accuracy || 0)) < Math.max(10, before * 0.3);
+        if (moved < 8 && steady && Date.now() - this.shownAt < 20000) return;
+      }
       this.emit();
     },
+    accept(p) {
+      if (this.source === 'manual') return;
+      const c = p.coords;
+      const acc = c.accuracy || 9999;
+      const now = Date.now();
+      if (this.source === 'gps' && this.pos && this.pos.accuracy) {
+        const fresh = now - this.fixAt < 20000;
+        if (fresh && acc > 60 && acc > this.pos.accuracy * 2) return;
+      }
+      this.fixAt = now;
+      this.setPos(c.latitude, c.longitude, acc, 'gps');
+    },
+    quality() {
+      if (this.source !== 'gps' || !this.pos || !this.pos.accuracy) return null;
+      const a = this.pos.accuracy;
+      return a <= 60 ? 'good' : a <= 250 ? 'fair' : 'poor';
+    },
+    accText() {
+      const a = this.pos && this.pos.accuracy;
+      if (!a || this.source !== 'gps') return '';
+      return a < 1000 ? `±${Math.max(5, Math.round(a / 5) * 5)} m` : `±${(a / 1000).toFixed(1)} km`;
+    },
     autoStart() {
+      if (this.deniedAt && Date.now() - this.deniedAt < 15000) return;
       this.start();
+    },
+    stop() {
+      const geo = navigator.geolocation;
+      if (geo && this.watchId !== null) geo.clearWatch(this.watchId);
+      if (geo && this.coarseId !== null) geo.clearWatch(this.coarseId);
+      this.watchId = null;
+      this.coarseId = null;
     },
     start() {
       if (this.watchId !== null || this.source === 'manual' || this.status === 'locating') return;
       if (!navigator.geolocation) return this.fallback('Location is not supported on this device.');
       if (!window.isSecureContext) return this.fallback('Live GPS needs a secure (https) link. On this Wi-Fi test address, set your location with ✎ on the map instead.');
       this.status = 'locating';
+      this.fellBack = false;
+      this.restarts = 0;
       this.emit();
-      this.attempt(true);
+      this.watchPrecise();
+      this.watchCoarse();
     },
-    // First try a precise fix (GPS on phones). If the device cannot provide one,
-    // try again with normal accuracy, which laptops can usually answer through Wi-Fi.
-    attempt(highAccuracy) {
-      const opts = highAccuracy
-        ? { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
-        : { enableHighAccuracy: false, maximumAge: 60000, timeout: 30000 };
-      this.watchId = navigator.geolocation.watchPosition(
-        (p) => {
-          if (this.source === 'manual') return;
-          this.setPos(p.coords.latitude, p.coords.longitude, p.coords.accuracy, 'gps');
-        },
+    denied() {
+      this.stop();
+      this.deniedAt = Date.now();
+      this.status = 'idle';
+      this.fallback('Location permission was denied. Allow location for this app in your phone or browser settings, then tap "Use device location".');
+    },
+    noFix(err) {
+      if (this.source === 'gps' || this.fellBack) return;
+      this.fellBack = true;
+      this.fallback(err.code === 2 ? 'The device could not determine its position yet.' : 'Finding your location is taking long. Still trying…', true);
+    },
+    watchPrecise() {
+      const geo = navigator.geolocation;
+      this.watchId = geo.watchPosition(
+        (p) => this.accept(p),
         (err) => {
-          if (this.pos && this.source === 'gps') return;
-          navigator.geolocation.clearWatch(this.watchId);
-          this.watchId = null;
-          if (err.code === 1) {
-            return this.fallback('Location permission was denied. Allow location for this app in your browser or phone settings, then tap "Use device location".');
+          if (err.code === 1) return this.denied();
+          if (this.coarseId === null) this.watchCoarse();
+          if (this.source !== 'gps' && this.restarts < 6) {
+            this.restarts += 1;
+            geo.clearWatch(this.watchId);
+            this.watchId = -1;
+            setTimeout(() => { if (this.watchId === -1 && this.source !== 'manual') this.watchPrecise(); }, 4000);
           }
-          if (highAccuracy) {
-            this.attempt(false);
-            return;
-          }
-          this.fallback(err.code === 2 ? 'The device could not determine its position.' : 'Finding your location took too long.');
         },
-        opts
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
+      );
+    },
+    watchCoarse() {
+      this.coarseId = navigator.geolocation.watchPosition(
+        (p) => this.accept(p),
+        (err) => {
+          if (err.code === 1) return this.denied();
+          this.noFix(err);
+        },
+        { enableHighAccuracy: false, maximumAge: 30000, timeout: 30000 }
       );
     },
     async fallback(reason, quiet) {
       if (this.source === 'manual' || this.source === 'gps') return;
       if (reason) this.lastError = reason;
-      try {
-        const r = await fetch('https://ipapi.co/json/');
-        const j = await r.json();
-        if (j && typeof j.latitude === 'number') return this.setPos(j.latitude, j.longitude, 5000, 'ip');
-      } catch { /* offline or blocked: fall through */ }
+      if (!this.ipPos) {
+        try {
+          const r = await fetch('https://ipapi.co/json/');
+          const j = await r.json();
+          if (j && typeof j.latitude === 'number') this.ipPos = { lat: j.latitude, lng: j.longitude };
+        } catch { /* offline or blocked: fall through */ }
+      }
+      if (this.source === 'manual' || this.source === 'gps') return;
+      if (this.ipPos) return this.setPos(this.ipPos.lat, this.ipPos.lng, 5000, 'ip');
       this.status = 'unavailable';
       this.error = reason || '';
       this.emit();
       if (this.error && !quiet) toast(this.error);
     },
     setManual(lat, lng) {
-      if (this.watchId !== null) {
-        navigator.geolocation.clearWatch(this.watchId);
-        this.watchId = null;
-      }
+      this.stop();
       this.setPos(lat, lng, null, 'manual');
     },
     async useDevice() {
@@ -400,7 +505,7 @@
         try {
           const st = await navigator.permissions.query({ name: 'geolocation' });
           if (st.state === 'denied') {
-            this.lastError = 'Location is blocked for this site in your browser.';
+            this.lastError = 'Location is blocked for this app.';
             this.emit();
             locationHelpSheet();
             return;
@@ -408,7 +513,8 @@
         } catch { /* not supported */ }
       }
       this.lastError = '';
-      if (this.watchId !== null) { navigator.geolocation.clearWatch(this.watchId); this.watchId = null; }
+      this.deniedAt = 0;
+      this.stop();
       this.source = null;
       this.pos = null;
       this.status = 'idle';
@@ -419,12 +525,22 @@
       if (this.status === 'locating') return 'Finding your location…';
       if (this.status === 'unavailable') return 'Location unavailable. Tap ✎ then the map to set it.';
       if (!this.pos) return 'Location off';
-      if (!D.isInKoronadal(this.pos)) return `${{ gps: 'Live', manual: 'Set manually', ip: 'Approximate' }[this.source] || ''} · Outside Koronadal City`;
+      let src = { gps: 'Live', manual: 'Set manually', ip: 'Approximate' }[this.source] || '';
+      if (this.source === 'gps') src = `${this.quality() === 'poor' ? 'Weak GPS' : 'Live'} ${this.accText()}`.trim();
       const where = D.isInKoronadal(this.pos) ? D.describePoint(this.pos) : 'Outside Koronadal City';
-      const src = { gps: 'Live', manual: 'Set manually', ip: 'Approximate' }[this.source] || '';
       return `${src} · ${where}`;
     }
   };
+  document.addEventListener('pointerdown', () => { Loc.held = true; Loc.heldAt = Date.now(); }, true);
+  ['pointerup', 'pointercancel'].forEach((ev) => document.addEventListener(ev, () => {
+    setTimeout(() => { Loc.held = false; Loc.flush(); }, 150);
+  }, true));
+  ['focusout', 'change'].forEach((ev) => document.addEventListener(ev, () => setTimeout(() => Loc.flush(), 60), true));
+  setInterval(() => Loc.flush(), 2000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || Loc.source === 'manual') return;
+    if (Loc.source === 'gps' && Date.now() - Loc.fixAt > 30000) { Loc.stop(); Loc.status = 'idle'; Loc.start(); }
+  });
 
   function originFromPoint(pos) {
     const n = D.nearestDestination(pos);
@@ -970,7 +1086,7 @@
         const remaining = Loc.pos ? (liveRoute ? liveRoute.km : D.roadDistanceKm(Loc.pos, to)) : null;
         const total = Math.max(0.1, trip.km || D.roadDistanceKm(trip.start, to));
         const pct = remaining === null ? 0 : Math.min(100, Math.max(0, Math.round((1 - remaining / total) * 100)));
-        const arrived = remaining !== null && D.haversineKm(Loc.pos, to) < 0.12;
+        const arrived = remaining !== null && D.haversineKm(Loc.pos, to) < 0.12 && (Loc.source !== 'gps' || !Loc.pos.accuracy || Loc.pos.accuracy <= 150);
 
         panel.innerHTML = `
           <div class="card trip-active">
@@ -1025,7 +1141,7 @@
                 : `<div class="origin-box" style="background:#fff7e6">⏳ <div>Waiting for your location<div class="sub">Tap ✎ on the map to set it manually</div></div></div>`}
               <button class="btn sm secondary" id="useDevice" title="Use the device's GPS / location service">Use device location</button>
             </div>
-            ${Loc.lastError && Loc.source !== 'gps' ? `<div class="form-error" style="margin:8px 0 0">Device location failed: ${esc(Loc.lastError)} <button class="link" id="locHelp">How to fix</button></div>` : ''}
+            ${Loc.lastError && Loc.source !== 'gps' ? `<div class="form-error" style="margin:8px 0 0">Device location: ${esc(Loc.lastError)} <button class="link" id="locHelp">How to fix</button></div>` : ''}${Loc.quality() === 'poor' ? `<div class="loc-warn">Your device is only giving a rough position (${Loc.accText()}), so the starting point may be wrong. Turn on precise location, go near a window or outdoors, or tap ✎ on the map to set it yourself. <button class="link" id="locHelp">How to fix</button></div>` : Loc.quality() === 'fair' ? `<div class="loc-note">GPS is still settling (${Loc.accText()}). It gets more exact after a few seconds outdoors.</div>` : ''}
           </div>
           ${passengerChips()}
           ${peopleStepper()}
