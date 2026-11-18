@@ -692,7 +692,8 @@
     openSheet(
       `<h3>${esc(d.name)}</h3>
        <p class="muted small" style="margin:0 0 14px">${esc(d.sub)} · ${esc(d.road)}</p>
-       ${Loc.pos ? '<button class="btn" id="shLive">Fare from my location</button>' : ''}
+       ${Trip.get() ? '<button class="btn" id="shTrip">Change my trip destination to here</button>' : ''}
+       ${Loc.pos ? `<button class="btn ${Trip.get() ? 'secondary' : ''}" id="shLive">Fare from my location</button>` : ''}
        <button class="btn ${Loc.pos ? 'secondary' : ''}" id="shGo">Get fare to this place</button>
        <button class="btn secondary" id="shFrom">Use as starting point</button>
        <button class="btn outline" id="shHere">📍 Set as my current location</button>
@@ -700,6 +701,8 @@
       (root) => {
         const live = $('#shLive', root);
         if (live) live.onclick = () => go('fares', { fromPoint: Loc.pos, to: d.id });
+        const change = $('#shTrip', root);
+        if (change) change.onclick = () => { closeSheet(); go('home', { changeTo: d.id }); };
         $('#shHere', root).onclick = () => {
           Loc.setManual(d.lat, d.lng);
           closeSheet();
@@ -760,6 +763,14 @@
     cached(a, b) {
       return a && b ? this.done.get(this.key(a, b)) || null : null;
     },
+    choose(a, b, i) {
+      const k = this.key(a, b);
+      const cur = this.done.get(k);
+      if (!cur || !cur.options || !cur.options[i]) return cur || null;
+      const next = { ...cur.options[i], options: cur.options, index: i };
+      this.done.set(k, next);
+      return next;
+    },
     get(a, b) {
       const k = this.key(a, b);
       if (this.done.has(k)) return Promise.resolve(this.done.get(k));
@@ -769,17 +780,22 @@
         try {
           const ctl = new AbortController();
           const t = setTimeout(() => ctl.abort(), 8000);
-          const url = `https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
+          const url = `https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson&alternatives=3`;
           const r = await fetch(url, { signal: ctl.signal });
           clearTimeout(t);
           const j = await r.json();
-          const rt = j.routes && j.routes[0];
-          if (!rt) { this.failed.set(k, Date.now()); return null; }
-          const res = {
+          const found = (j.routes || []).map((rt) => ({
             coords: rt.geometry.coordinates.map(([lng, lat]) => [lat, lng]),
             km: Math.max(0.1, Math.round(rt.distance / 100) / 10),
-            minutes: Math.round(rt.duration / 60)
-          };
+            minutes: Math.round(rt.duration / 60),
+            meters: rt.distance
+          })).filter((o) => o.coords.length > 1).sort((x, y) => x.meters - y.meters);
+          if (!found.length) { this.failed.set(k, Date.now()); return null; }
+          const mid = (o) => o.coords[Math.floor(o.coords.length / 2)];
+          const same = (x, y) => Math.abs(x.meters - y.meters) < 60 && D.haversineKm({ lat: mid(x)[0], lng: mid(x)[1] }, { lat: mid(y)[0], lng: mid(y)[1] }) < 0.08;
+          const options = [];
+          for (const o of found) if (options.length < 3 && !options.some((x) => same(x, o))) options.push(o);
+          const res = { ...options[0], options, index: 0 };
           this.done.set(k, res);
           return res;
         } catch {
@@ -848,31 +864,67 @@
       if (!custom) custom = L.marker(ll, { icon: L.divIcon({ className: 'pin selected', iconSize: [18, 18] }), title: 'Pinned destination' }).addTo(map);
       else custom.setLatLng(ll);
     }
-    let line = null;
-    let lineKey = null;
+    let startPin = null;
+    function setStart(pos) {
+      if (!pos) { if (startPin) { startPin.remove(); startPin = null; } return; }
+      const ll = [pos.lat, pos.lng];
+      if (!startPin) {
+        startPin = L.marker(ll, {
+          icon: L.divIcon({ className: 'start-pin', html: '<span>Start</span>', iconSize: [48, 24], iconAnchor: [24, 32] }),
+          zIndexOffset: 900, interactive: false, keyboard: false, title: 'Where this trip started'
+        }).addTo(map);
+      } else startPin.setLatLng(ll);
+    }
+    let lines = [];
+    let lineSig = null;
+    let fitSig = null;
+    function clearLines() {
+      lines.forEach((l) => l.remove());
+      lines = [];
+    }
     function drawLine(from, to) {
-      if (!from || !to) { if (line) { line.remove(); line = null; } lineKey = null; return; }
+      if (!from || !to) { clearLines(); lineSig = null; fitSig = null; return; }
       const key = Route.key(from, to);
       const cached = Route.cached(from, to);
-      if (key === lineKey && line) {
-        if (cached && line.options.dashArray) line.setLatLngs(cached.coords).setStyle({ dashArray: null, weight: 4 });
+      const sig = cached ? `${key}|${cached.index || 0}|${(cached.options || []).length}` : `${key}|pending`;
+      if (sig === lineSig) return;
+      clearLines();
+      lineSig = sig;
+      if (!cached) {
+        const dashed = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: '#1f8a4c', weight: 3, dashArray: '6 6', interactive: false }).addTo(map);
+        lines.push(dashed);
+        if (fitSig !== sig) { fitSig = sig; map.fitBounds(dashed.getBounds(), { padding: [40, 40], maxZoom: 16 }); }
+        Route.get(from, to).then((r) => { if (r && lineSig === sig) drawLine(from, to); });
         return;
       }
-      if (line) line.remove();
-      lineKey = key;
-      if (cached) {
-        line = L.polyline(cached.coords, { color: '#1f8a4c', weight: 4 }).addTo(map);
-      } else {
-        line = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: '#1f8a4c', weight: 3, dashArray: '6 6' }).addTo(map);
-        Route.get(from, to).then((r) => {
-          if (!r || lineKey !== key || !line) return;
-          line.setLatLngs(r.coords).setStyle({ dashArray: null, weight: 4 });
-          map.fitBounds(line.getBounds(), { padding: [40, 40], maxZoom: 16 });
-        });
+      const options = cached.options && cached.options.length ? cached.options : [cached];
+      const chosen = cached.index || 0;
+      options.forEach((o, i) => {
+        if (i === chosen) return;
+        const pick = () => {
+          if (opts.routesLocked && opts.routesLocked()) return;
+          const r = Route.choose(from, to, i);
+          drawLine(from, to);
+          if (opts.onRoute) opts.onRoute(r);
+        };
+        const faded = L.polyline(o.coords, { color: '#6f7f9c', weight: 5, opacity: 0.5, lineCap: 'round' }).addTo(map);
+        const touch = L.polyline(o.coords, { color: '#000', weight: 26, opacity: 0 }).addTo(map);
+        faded.on('click', pick);
+        touch.on('click', pick);
+        lines.push(faded, touch);
+      });
+      const guard = L.polyline(options[chosen].coords, { color: '#000', weight: 18, opacity: 0 }).addTo(map);
+      const main = L.polyline(options[chosen].coords, { color: '#1f8a4c', weight: 5, lineCap: 'round' }).addTo(map);
+      lines.push(guard, main);
+      const fitKey = `${key}|routes`;
+      if (fitSig !== fitKey) {
+        fitSig = fitKey;
+        const box = L.latLngBounds([]);
+        options.forEach((o) => box.extend(L.polyline(o.coords).getBounds()));
+        map.fitBounds(box, { padding: [40, 40], maxZoom: 16 });
       }
-      map.fitBounds(line.getBounds(), { padding: [40, 40], maxZoom: 16 });
     }
-    return { map, showUser, highlight, drawLine, setCustom, destroy: () => map.remove() };
+    return { map, showUser, highlight, drawLine, setCustom, setStart, destroy: () => map.remove() };
   }
 
   // Screens
@@ -1020,8 +1072,73 @@
       <h2>Travel tip</h2>
       <div class="tip"><strong>Fares are estimates.</strong> Confirm the fare with the driver before travelling. Regular tricycle fare inside the city proper usually starts at ₱15 per passenger.</div>`;
 
-    const view = createMap($('#map'), { onPick: (id) => { toId = id; drawPanel(); } });
+    const view = createMap($('#map'), {
+      onPick: (id) => { if (Trip.get()) return askChange(id, null); toId = id; drawPanel(); },
+      routesLocked: () => !!mode,
+      onRoute: (r) => {
+        if (!r) return;
+        if (Trip.get()) setTripRoute(r); else toast(`Route selected · ${fmtKm(r.km)}`);
+        drawPanel();
+      }
+    });
     setTimeout(() => view.map.invalidateSize(), 50);
+
+    function routeChips(r) {
+      if (!r || !r.options || r.options.length < 2) return '';
+      return `<div class="field"><label>Route the driver is taking</label>
+        <div class="chips" id="routeChips">${r.options.map((o, i) =>
+          `<button class="chip ${i === r.index ? 'active' : ''}" data-route="${i}">${i === 0 ? 'Shortest' : `Route ${i + 1}`} · ${fmtKm(o.km)}</button>`).join('')}</div>
+        <div class="hint">The green line is the selected route. If the driver takes another road, tap a grey line on the map or choose it here. The fare follows the selected route.</div></div>`;
+    }
+    function setTripRoute(r) {
+      const t = Trip.get();
+      if (!t || !r) return;
+      const dest = resolveTo(t.toId, t.toPoint, t.toName);
+      const all = dest ? D.estimateFaresBetween(t.start, dest, fareOpts({ km: r.km })) : [];
+      const f = all.find((x) => x.vehicle.id === t.vehicleId) || all[0];
+      const updated = { ...t, km: r.km, routeIndex: r.index || 0, vehicleId: f ? f.vehicle.id : t.vehicleId };
+      Trip.set(updated);
+      if (SB && updated.remoteId && f) SB.sync.tripUpdate(updated.remoteId, { toId: t.toId, toPoint: t.toPoint, toName: t.toName, vehicleId: updated.vehicleId, km: r.km, fare: f }).catch(() => {});
+      const g = f ? groupFare(f) : null;
+      toast(`Route changed · ${fmtKm(r.km)}${g ? ` · ${D.peso(g.low)}–${D.peso(g.high)}` : ''}`);
+    }
+
+    function askChange(id, point) {
+      const trip = Trip.get();
+      if (!trip) return;
+      const next = resolveTo(id, point);
+      if (!next) return;
+      if (id !== 'custom' && id === trip.toId) { toast('That is already your destination'); return; }
+      if (D.haversineKm(trip.start, next) < 0.05) { toast('That is where this trip started. Pick another place.'); return; }
+      confirmSheet(
+        'Change destination?',
+        `Your trip continues to ${next.name}. The fare will be recomputed from where the trip started.`,
+        'Change destination',
+        () => applyChange(id, point, next),
+        false
+      );
+    }
+    async function applyChange(id, point, next) {
+      if (!Trip.get()) return;
+      toast('Updating your trip…');
+      const r = await Route.get(Trip.get().start, next);
+      const t = Trip.get();
+      if (!t) return;
+      const km = r ? r.km : 0;
+      const all = D.estimateFaresBetween(t.start, next, fareOpts({ km }));
+      if (!all.length) { toast('No vehicle covers that distance from where you started.'); return; }
+      const f = all.find((x) => x.vehicle.id === t.vehicleId) || all[0];
+      const switched = f.vehicle.id !== t.vehicleId;
+      const updated = { ...t, toId: id, toPoint: id === 'custom' ? point : null, toName: undefined, km, routeIndex: r ? r.index || 0 : 0, vehicleId: f.vehicle.id, arrivedNotified: false, changed: (t.changed || 0) + 1 };
+      Trip.set(updated);
+      toId = id;
+      toPoint = updated.toPoint;
+      Recent.add({ from: 'me', fromPoint: t.start, to: id, toPoint: updated.toPoint });
+      if (SB && updated.remoteId) SB.sync.tripUpdate(updated.remoteId, { toId: id, toPoint: updated.toPoint, vehicleId: f.vehicle.id, km, fare: f }).catch(() => {});
+      const g = groupFare(f);
+      toast(`Destination changed · ${D.peso(g.low)}–${D.peso(g.high)}${switched ? ` · now ${f.vehicle.name}` : ''}`);
+      drawPanel();
+    }
     function setMode(next) {
       mode = mode === next ? null : next;
       $('#manual').classList.toggle('active', mode === 'manual');
@@ -1037,7 +1154,7 @@
         Loc.setManual(e.latlng.lat, e.latlng.lng);
         toast('Your location was set');
       } else {
-        if (Trip.get()) { toast('End the current trip first'); setMode(null); return; }
+        if (Trip.get()) { setMode(null); askChange('custom', { lat: e.latlng.lat, lng: e.latlng.lng }); return; }
         toPoint = { lat: e.latlng.lat, lng: e.latlng.lng };
         toId = 'custom';
         toast('Destination pinned');
@@ -1078,6 +1195,11 @@
         const to = resolveTo(trip.toId, trip.toPoint, trip.toName);
         if (!to) { Trip.clear(); return drawPanel(); }
         view.setCustom(trip.toId === 'custom' ? to : null);
+        view.setStart(trip.start);
+        const startedAt = trip.startedAt ? new Date(trip.startedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+        let tripRoute = Route.cached(trip.start, to);
+        if (!tripRoute) Route.get(trip.start, to).then((r) => { if (r && Trip.get()) drawPanel(); });
+        else if (trip.routeIndex && tripRoute.index !== trip.routeIndex && tripRoute.options && tripRoute.options[trip.routeIndex]) tripRoute = Route.choose(trip.start, to, trip.routeIndex);
         const v = D.VEHICLES.find((x) => x.id === trip.vehicleId) || D.VEHICLES[0];
         const all = D.estimateFaresBetween(trip.start, to, fareOpts({ km: trip.km || 0 }));
         const fare = all.find((f) => f.vehicle.id === v.id) || all[0];
@@ -1091,22 +1213,37 @@
         panel.innerHTML = `
           <div class="card trip-active">
             <span class="pill">${arrived ? 'You have arrived' : 'Trip in progress'}</span>
-            <div class="trip-line"><div class="dot b"></div><div><div class="k">Destination</div><div class="v">${esc(to.name)}</div><div class="muted small">${esc(to.road)}</div></div></div>
+            <div class="trip-line"><div class="dot a"></div><div><div class="k">Started at</div><div class="v">${esc(D.describePoint(trip.start))}</div><div class="muted small">${startedAt ? `${esc(startedAt)} · ` : ''}marked "Start" on the map</div></div></div>
+            <div class="trip-line"><div class="dot b"></div><div><div class="k">Destination${trip.changed ? ' (changed)' : ''}</div><div class="v">${esc(to.name)}</div><div class="muted small">${esc(to.road)}</div></div></div>
             <div class="stat-row">
               <div class="stat"><div class="n">${remaining === null ? '—' : fmtKm(remaining)}</div><div class="l">Remaining</div></div>
               <div class="stat"><div class="n">${remaining === null ? '—' : '~' + (Math.round((remaining / v.speedKph) * 60) + 1) + ' min'}</div><div class="l">Time left</div></div>
               <div class="stat"><div class="n">${fare ? rangeTxt(groupFare(fare).low, groupFare(fare).high) : '—'}</div><div class="l">${esc(v.name)} fare${people() > 1 ? ` · ${people()} people` : ''}</div></div>
             </div>
             <div class="progress"><div style="width:${pct}%"></div></div>
-            <div class="muted small">${pct}% of the trip completed · fare fixed from where you started (${fmtKm(total)})${fare ? esc(fareNote(fare)) : ''}</div>
+            <div class="muted small">${pct}% of the trip completed · fare computed from where the trip started (${fmtKm(total)})${fare ? esc(fareNote(fare)) : ''}</div>
             ${fare && groupLine(fare) ? `<div class="muted small">${groupLine(fare)}</div>` : ''}
             <div class="field" style="margin-top:12px"><label>Vehicle you are riding</label>
               <select id="tripVehicle">${D.VEHICLES.map((x) => `<option value="${x.id}" ${x.id === v.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+            ${routeChips(tripRoute)}
+            <div class="field"><label>Changed your mind? Choose a new destination</label>
+              <select id="tripTo">${trip.toId === 'custom' ? `<option value="custom" selected>⚑ Pinned location (${esc(to.sub)})</option>` : ''}${destOptions(trip.toId, 'Choose a new destination')}</select>
+              <div class="hint">You can also tap a pin on the map, or press ⚑ and tap any spot. The trip keeps going and the fare is recomputed from where it started.</div></div>
             <button class="btn ${arrived ? '' : 'danger'}" id="endTrip">${arrived ? 'Finish trip' : 'End trip'}</button>
           </div>`;
         view.highlight(to.id);
-        view.drawLine(Loc.pos || trip.start, to);
-        $('#tripVehicle').onchange = (e) => { Trip.set({ ...trip, vehicleId: e.target.value }); drawPanel(); };
+        view.drawLine(trip.start, to);
+        $('#tripVehicle').onchange = (e) => { Trip.set({ ...(Trip.get() || trip), vehicleId: e.target.value }); drawPanel(); };
+        $$('[data-route]', panel).forEach((b) => (b.onclick = () => {
+          const r = Route.choose(trip.start, to, Number(b.dataset.route));
+          setTripRoute(r);
+          drawPanel();
+        }));
+        $('#tripTo').onchange = (e) => {
+          const picked = e.target.value;
+          e.target.value = trip.toId;
+          if (picked && picked !== 'custom') askChange(picked, null);
+        };
         keepAwake(true);
         if (arrived && !trip.arrivedNotified) { Trip.set({ ...trip, arrivedNotified: true }); toast('You have arrived at your destination'); }
         $('#endTrip').onclick = () => {
@@ -1119,6 +1256,7 @@
 
       const to = toId ? resolveTo(toId, toPoint) : null;
       view.setCustom(to && to.id === 'custom' ? to : null);
+      view.setStart(null);
       const hasLoc = !!Loc.pos;
       const route = hasLoc && to ? Route.cached(Loc.pos, to) : null;
       let routing = false;
@@ -1150,11 +1288,17 @@
           ${to && hasLoc && !fares.length ? `<div class="form-error" style="margin:0 0 12px">${outside ? 'Your location is outside Koronadal City, so no fare can be estimated.' : 'This trip is too far for the vehicles covered by this app.'}</div>` : ''}
           ${to && hasLoc && routing && !route ? `<div class="muted small" style="margin:0 0 10px">⏳ Finding the road route…</div>` : ''}
           ${to && hasLoc ? `<div class="quote">${fares.map((f) => `<div class="quote-row"><div class="vletter" style="background:${f.vehicle.color}">${f.vehicle.letter}</div><div class="n">${esc(f.vehicle.name)}<div class="muted small">${f.km} km ${route ? 'by road' : '(est.)'} · ~${f.minutes} min${f.discount ? ` · <s>${D.peso(f.regularLow)}–${D.peso(f.regularHigh)}</s>` : ''}</div></div><div class="p">${people() > 1 ? rangeTxt(groupFare(f).low, groupFare(f).high) : rangeTxt(f.low, f.high)}</div></div>${groupLine(f) ? `<div class="muted small group-line">${groupLine(f)}</div>` : ''}`).join('')}</div>${fares.length && fares[0].discount ? `<div class="muted small" style="margin:-8px 0 12px">${esc(passengerType().label)} fare with ${pct(passengerType())}% discount applied.</div>` : ''}` : ''}
+          ${to && hasLoc && fares.length ? routeChips(route) : ''}
           <button class="btn" id="startTrip">Start trip & track fare</button>
           <button class="btn secondary" id="allRoutes" style="margin-top:8px">View route details</button>
         </div>`;
       view.highlight(toId);
       view.drawLine(hasLoc && to ? Loc.pos : null, to);
+      $$('[data-route]', panel).forEach((b) => (b.onclick = () => {
+        const r = Route.choose(Loc.pos, to, Number(b.dataset.route));
+        if (r) toast(`Route selected · ${fmtKm(r.km)}`);
+        drawPanel();
+      }));
       $('#to').onchange = (e) => { toId = e.target.value; drawPanel(); };
       bindPassengerChips(drawPanel);
       bindPeopleStepper(drawPanel);
@@ -1174,7 +1318,7 @@
         if (!ready()) return;
         const f = fares[0];
         const tp = toId === 'custom' ? toPoint : null;
-        const newTrip = { toId, toPoint: tp, vehicleId: f.vehicle.id, start: { lat: Loc.pos.lat, lng: Loc.pos.lng }, km: route ? route.km : 0, startedAt: Date.now() };
+        const newTrip = { toId, toPoint: tp, vehicleId: f.vehicle.id, start: { lat: Loc.pos.lat, lng: Loc.pos.lng }, km: route ? route.km : 0, routeIndex: route ? route.index || 0 : 0, startedAt: Date.now() };
         Trip.set(newTrip);
         Recent.add({ from: 'me', fromPoint: Loc.pos, to: toId, toPoint: tp });
         if (SB) SB.sync.tripStart(newTrip, Session.id(), f, passengerType().id, people()).then((id) => { const t = Trip.get(); if (t && id) Trip.set({ ...t, remoteId: id }); }).catch(() => {});
@@ -1194,6 +1338,11 @@
     view.showUser(Loc.pos, true);
     if (Loc.pos) view._centered = true;
     drawPanel();
+
+    if (p.changeTo && Trip.get()) {
+      state.params = { ...state.params, changeTo: undefined };
+      setTimeout(() => { if (state.screen === 'home') askChange(p.changeTo, null); }, 250);
+    }
 
     cleanup = () => { unsub(); view.destroy(); };
   };

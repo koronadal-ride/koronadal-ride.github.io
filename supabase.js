@@ -140,6 +140,13 @@
       await client.from('trips').insert(row);
       return null;
     },
+    async tripUpdate(key, change) {
+      if (!client || !key || typeof key === 'number') return;
+      await client.rpc('update_trip', {
+        p_key: key, p_to_id: change.toId, p_to_point: change.toPoint || null, p_to_name: change.toName || null, p_vehicle: change.vehicleId || null,
+        p_km: change.km || null, p_fare_low: change.fare ? change.fare.low : null, p_fare_high: change.fare ? change.fare.high : null
+      });
+    },
     async tripEnd(key, arrived) {
       if (!client || !key) return;
       if (typeof key === 'number') { await client.from('trips').update({ ended_at: new Date().toISOString(), arrived: !!arrived }).eq('id', key); return; }
