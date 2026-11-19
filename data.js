@@ -190,7 +190,7 @@ const FUEL_LEVELS = [
 ];
 const DEFAULT_DISCOUNTS = [
   { id: 'regular', label: 'Regular', discount: 0, amount: 0, fuelAdd: 5 },
-  { id: 'student', label: 'High School / College Student', discount: 0.2, amount: 3, fuelAdd: 4 },
+  { id: 'student', label: 'Student', discount: 0.2, amount: 3, fuelAdd: 4 },
   { id: 'senior', label: 'Senior Citizen', discount: 0.2, amount: 3, fuelAdd: 4 },
   { id: 'pwd', label: 'PWD', discount: 0.2, amount: 3, fuelAdd: 4 }
 ];

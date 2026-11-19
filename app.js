@@ -108,7 +108,8 @@
     set: (v) => store.set(userKey('draft'), v),
     clear: () => store.remove(userKey('draft'))
   };
-  const passengerTypes = () => (D.DISCOUNTS && D.DISCOUNTS.length ? D.DISCOUNTS : D.DEFAULT_DISCOUNTS);
+  const HIDDEN_TYPES = ['elementary', 'kinder'];
+  const passengerTypes = () => (D.DISCOUNTS && D.DISCOUNTS.length ? D.DISCOUNTS : D.DEFAULT_DISCOUNTS).filter((t) => !HIDDEN_TYPES.includes(t.id));
   const isPrivileged = (t) => !!t && (t.discount > 0 || t.amount > 0);
   const Settings = {
     get: () => ({ passenger: 'regular', people: 1, discounted: 1, ...store.get(userKey('settings'), {}) }),
@@ -162,7 +163,7 @@
     const cur = passengerType().id;
     return `<div class="field"><label>Passenger type</label><div class="chips" id="paxChips">${passengerTypes().map((t) =>
       `<button class="chip ${t.id === cur ? 'active' : ''}" data-pax="${t.id}">${esc(t.label)}</button>`).join('')}</div>
-      <div class="hint">Tricycle fares for students, senior citizens, PWDs and pupils follow the city ordinance. Other vehicles give them a discount. Show a valid ID to the driver.</div></div>`;
+      <div class="hint">Tricycle fares for students, senior citizens and PWDs follow the city ordinance. Other vehicles give them a discount. Show a valid ID to the driver.</div></div>`;
   }
   function bindPassengerChips(onChange) {
     $$('[data-pax]').forEach((b) => b.addEventListener('click', () => {
@@ -1860,7 +1861,7 @@
       <div class="card">
         <div class="card-title">Fare inside the zone${level ? ' (with gasoline adjustment)' : ''}</div>
         <table class="fare-table">${types.map((t) => `<tr><td>${esc(t.label)}</td><td>${D.peso(zoneFare(t))}</td></tr>`).join('')}</table>
-        <p class="small muted" style="margin:10px 0 0">Per passenger. Students, senior citizens, PWDs and pupils must show a valid ID.</p>
+        <p class="small muted" style="margin:10px 0 0">Per passenger. Students, senior citizens and PWDs must show a valid ID.</p>
       </div>
       <div class="card">
         <div class="card-title">Going outside the zone</div>
@@ -1883,7 +1884,7 @@
           <tr><td>₱101 to ₱130 per litre</td><td>+₱10</td></tr>
           <tr><td>₱131 to ₱160 per litre</td><td>+₱15</td></tr>
         </table>
-        <p class="small muted" style="margin:10px 0 0">The increase is smaller for students, senior citizens, PWDs and pupils. In effect now: <strong>${esc((D.FUEL_LEVELS[level] || D.FUEL_LEVELS[0]).label)}</strong>.</p>
+        <p class="small muted" style="margin:10px 0 0">The increase is smaller for students, senior citizens and PWDs. In effect now: <strong>${esc((D.FUEL_LEVELS[level] || D.FUEL_LEVELS[0]).label)}</strong>.</p>
       </div>
       <div class="card">
         <div class="card-title">Your rights as a passenger</div>
