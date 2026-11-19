@@ -311,7 +311,7 @@
       ios: [
         'Open <strong>Settings → Privacy &amp; Security → Location Services</strong> and turn it on.',
         'In the same list, tap <strong>Safari Websites</strong>. Choose <strong>While Using the App</strong> and turn on <strong>Precise Location</strong>.',
-        app ? 'Close Koronadal Ride completely, open it again and tap <strong>Allow</strong> when it asks for your location.' : 'Reload this page and tap <strong>Allow</strong> when Safari asks for your location.',
+        app ? 'If you tapped <strong>Don\'t Allow</strong> before, remove the Koronadal Ride icon from the Home Screen and add it again from Safari. Then open it and tap <strong>Allow</strong> when it asks for your location.' : 'Reload this page and tap <strong>Allow</strong> when Safari asks for your location.',
         'Go outdoors or near a window and wait a few seconds for the GPS to settle.'
       ],
       desktop: [
@@ -501,7 +501,7 @@
         toast('Live GPS is not available on this http address. Use ✎ on the map, or open the https version.');
         return;
       }
-      if (navigator.permissions && navigator.permissions.query) {
+      if (platform() !== 'ios' && navigator.permissions && navigator.permissions.query) {
         try {
           const st = await navigator.permissions.query({ name: 'geolocation' });
           if (st.state === 'denied') {
