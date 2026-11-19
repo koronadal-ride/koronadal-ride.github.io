@@ -108,14 +108,8 @@
     set: (v) => store.set(userKey('draft'), v),
     clear: () => store.remove(userKey('draft'))
   };
-  const DEFAULT_TYPES = [
-    { id: 'regular', label: 'Regular', discount: 0 },
-    { id: 'student', label: 'Student', discount: 0.2 },
-    { id: 'senior', label: 'Senior Citizen', discount: 0.2 },
-    { id: 'pwd', label: 'PWD', discount: 0.2 }
-  ];
-  const passengerTypes = () => (D.DISCOUNTS && D.DISCOUNTS.length ? D.DISCOUNTS : DEFAULT_TYPES);
-  const pct = (t) => Math.round(t.discount * 100);
+  const passengerTypes = () => (D.DISCOUNTS && D.DISCOUNTS.length ? D.DISCOUNTS : D.DEFAULT_DISCOUNTS);
+  const isPrivileged = (t) => !!t && (t.discount > 0 || t.amount > 0);
   const Settings = {
     get: () => ({ passenger: 'regular', people: 1, discounted: 1, ...store.get(userKey('settings'), {}) }),
     set: (patch) => store.set(userKey('settings'), { ...Settings.get(), ...patch })
@@ -125,10 +119,10 @@
   const discountedCount = () => Math.min(people(), Math.max(0, Settings.get().discounted ?? 1));
   function groupFare(f) {
     const n = people();
-    const d = f.discount ? discountedCount() : 0;
+    const d = f.discounted ? discountedCount() : 0;
     return { n, d, low: f.low * d + f.regularLow * (n - d), high: f.high * d + f.regularHigh * (n - d) };
   }
-  const rangeTxt = (lo, hi) => `${D.peso(lo)}–${D.peso(hi)}`;
+  const rangeTxt = (lo, hi) => (lo === hi ? D.peso(lo) : `${D.peso(lo)}–${D.peso(hi)}`);
   function groupLine(f) {
     const g = groupFare(f);
     if (g.n === 1) return '';
@@ -139,7 +133,7 @@
     return `Total for ${g.n}: ${rangeTxt(g.low, g.high)} (${parts.join(' + ')})${moto}`;
   }
   function peopleStepper() {
-    const n = people(), d = discountedCount(), disc = passengerType().discount > 0;
+    const n = people(), d = discountedCount(), disc = isPrivileged(passengerType());
     return `<div class="field"><label>Passengers</label>
       <div class="stepper-row">
         <div class="stepper"><button data-step="people" data-dir="-1" ${n <= 1 ? 'disabled' : ''}>−</button><span>${n} ${n === 1 ? 'person' : 'people'}</span><button data-step="people" data-dir="1" ${n >= MAX_PEOPLE ? 'disabled' : ''}>+</button></div>
@@ -161,13 +155,14 @@
     }));
   }
   const passengerType = () => passengerTypes().find((t) => t.id === Settings.get().passenger) || passengerTypes()[0];
-  const fareOpts = (extra = {}) => ({ discount: passengerType().discount, ...extra });
-  const fareNote = (f) => (f.discount ? ` · ${passengerType().label} fare, ${Math.round(f.discount * 100)}% off (regular ${D.peso(f.regularLow)}–${D.peso(f.regularHigh)})` : '');
+  const fareOpts = (extra = {}) => ({ discount: passengerType().discount, type: passengerType(), ...extra });
+  const routeOpts = (r) => (r ? { km: r.km, kmOut: r.kmOut } : { km: 0 });
+  const fareNote = (f) => (f.discounted ? ` · ${passengerType().label} fare, ${f.offText} (regular ${rangeTxt(f.regularLow, f.regularHigh)})` : '');
   function passengerChips() {
     const cur = passengerType().id;
     return `<div class="field"><label>Passenger type</label><div class="chips" id="paxChips">${passengerTypes().map((t) =>
-      `<button class="chip ${t.id === cur ? 'active' : ''}" data-pax="${t.id}">${esc(t.label)}${t.discount ? ` · ${pct(t)}% off` : ''}</button>`).join('')}</div>
-      <div class="hint">Discounted passenger types are set by the administrator. Show a valid ID to the driver.</div></div>`;
+      `<button class="chip ${t.id === cur ? 'active' : ''}" data-pax="${t.id}">${esc(t.label)}</button>`).join('')}</div>
+      <div class="hint">Tricycle fares for students, senior citizens, PWDs and pupils follow the city ordinance. Other vehicles give them a discount. Show a valid ID to the driver.</div></div>`;
   }
   function bindPassengerChips(onChange) {
     $$('[data-pax]').forEach((b) => b.addEventListener('click', () => {
@@ -604,7 +599,8 @@
     personal: 'Personal information',
     recent: 'Recent searches',
     pick: 'Choose a place on the map',
-    about: 'How fares are estimated'
+    about: 'How fares are estimated',
+    ordinance: 'Official tricycle fares'
   };
 
   const state = { screen: 'login', params: {}, stack: [] };
@@ -789,7 +785,7 @@
             km: Math.max(0.1, Math.round(rt.distance / 100) / 10),
             minutes: Math.round(rt.duration / 60),
             meters: rt.distance
-          })).filter((o) => o.coords.length > 1).sort((x, y) => x.meters - y.meters);
+          })).map((o) => ({ ...o, kmOut: D.outsideKm(o.coords) })).filter((o) => o.coords.length > 1).sort((x, y) => x.meters - y.meters);
           if (!found.length) { this.failed.set(k, Date.now()); return null; }
           const mid = (o) => o.coords[Math.floor(o.coords.length / 2)];
           const same = (x, y) => Math.abs(x.meters - y.meters) < 60 && D.haversineKm({ lat: mid(x)[0], lng: mid(x)[1] }, { lat: mid(y)[0], lng: mid(y)[1] }) < 0.08;
@@ -824,6 +820,9 @@
       tileWarned = true;
       toast('Map images could not load. Check your internet connection.');
     });
+    if (opts.showZone && D.RULES && D.RULES.zone && D.RULES.zone.length >= 3) {
+      L.polygon(D.RULES.zone, { color: '#b4235a', weight: 2, dashArray: '7 6', fillColor: '#b4235a', fillOpacity: 0.04, interactive: false }).addTo(map);
+    }
     L.control.zoom({ position: 'bottomright' }).addTo(map);
     map.setMaxBounds(D.KORONADAL.bounds);
     map.setMinZoom(11);
@@ -1070,7 +1069,7 @@
       <h2>Popular places</h2>
       ${popularTiles()}
       <h2>Travel tip</h2>
-      <div class="tip"><strong>Fares are estimates.</strong> Confirm the fare with the driver before travelling. Regular tricycle fare inside the city proper usually starts at ₱15 per passenger.</div>`;
+      <div class="tip"><strong>Tricycle fares follow the city ordinance.</strong> Inside the Downtown Base-Fare Zone the regular fare is ${D.peso((D.VEHICLES.find((v) => v.id === 'tricycle') || { base: 15 }).base)} per passenger, however far you go. Habal-habal and multicab fares are estimates, so confirm them with the driver.</div>`;
 
     const view = createMap($('#map'), {
       onPick: (id) => { if (Trip.get()) return askChange(id, null); toId = id; drawPanel(); },
@@ -1094,13 +1093,13 @@
       const t = Trip.get();
       if (!t || !r) return;
       const dest = resolveTo(t.toId, t.toPoint, t.toName);
-      const all = dest ? D.estimateFaresBetween(t.start, dest, fareOpts({ km: r.km })) : [];
+      const all = dest ? D.estimateFaresBetween(t.start, dest, fareOpts(routeOpts(r))) : [];
       const f = all.find((x) => x.vehicle.id === t.vehicleId) || all[0];
-      const updated = { ...t, km: r.km, routeIndex: r.index || 0, vehicleId: f ? f.vehicle.id : t.vehicleId };
+      const updated = { ...t, km: r.km, kmOut: r.kmOut, routeIndex: r.index || 0, vehicleId: f ? f.vehicle.id : t.vehicleId };
       Trip.set(updated);
       if (SB && updated.remoteId && f) SB.sync.tripUpdate(updated.remoteId, { toId: t.toId, toPoint: t.toPoint, toName: t.toName, vehicleId: updated.vehicleId, km: r.km, fare: f }).catch(() => {});
       const g = f ? groupFare(f) : null;
-      toast(`Route changed · ${fmtKm(r.km)}${g ? ` · ${D.peso(g.low)}–${D.peso(g.high)}` : ''}`);
+      toast(`Route changed · ${fmtKm(r.km)}${g ? ` · ${rangeTxt(g.low, g.high)}` : ''}`);
     }
 
     function askChange(id, point) {
@@ -1125,18 +1124,18 @@
       const t = Trip.get();
       if (!t) return;
       const km = r ? r.km : 0;
-      const all = D.estimateFaresBetween(t.start, next, fareOpts({ km }));
+      const all = D.estimateFaresBetween(t.start, next, fareOpts(r ? routeOpts(r) : { km }));
       if (!all.length) { toast('No vehicle covers that distance from where you started.'); return; }
       const f = all.find((x) => x.vehicle.id === t.vehicleId) || all[0];
       const switched = f.vehicle.id !== t.vehicleId;
-      const updated = { ...t, toId: id, toPoint: id === 'custom' ? point : null, toName: undefined, km, routeIndex: r ? r.index || 0 : 0, vehicleId: f.vehicle.id, arrivedNotified: false, changed: (t.changed || 0) + 1 };
+      const updated = { ...t, toId: id, toPoint: id === 'custom' ? point : null, toName: undefined, km, kmOut: r ? r.kmOut : undefined, routeIndex: r ? r.index || 0 : 0, vehicleId: f.vehicle.id, arrivedNotified: false, changed: (t.changed || 0) + 1 };
       Trip.set(updated);
       toId = id;
       toPoint = updated.toPoint;
       Recent.add({ from: 'me', fromPoint: t.start, to: id, toPoint: updated.toPoint });
       if (SB && updated.remoteId) SB.sync.tripUpdate(updated.remoteId, { toId: id, toPoint: updated.toPoint, vehicleId: f.vehicle.id, km, fare: f }).catch(() => {});
       const g = groupFare(f);
-      toast(`Destination changed · ${D.peso(g.low)}–${D.peso(g.high)}${switched ? ` · now ${f.vehicle.name}` : ''}`);
+      toast(`Destination changed · ${rangeTxt(g.low, g.high)}${switched ? ` · now ${f.vehicle.name}` : ''}`);
       drawPanel();
     }
     function setMode(next) {
@@ -1201,7 +1200,7 @@
         if (!tripRoute) Route.get(trip.start, to).then((r) => { if (r && Trip.get()) drawPanel(); });
         else if (trip.routeIndex && tripRoute.index !== trip.routeIndex && tripRoute.options && tripRoute.options[trip.routeIndex]) tripRoute = Route.choose(trip.start, to, trip.routeIndex);
         const v = D.VEHICLES.find((x) => x.id === trip.vehicleId) || D.VEHICLES[0];
-        const all = D.estimateFaresBetween(trip.start, to, fareOpts({ km: trip.km || 0 }));
+        const all = D.estimateFaresBetween(trip.start, to, fareOpts({ km: trip.km || 0, kmOut: trip.kmOut }));
         const fare = all.find((f) => f.vehicle.id === v.id) || all[0];
         const liveRoute = Loc.pos ? Route.cached(Loc.pos, to) : null;
         if (Loc.pos && !liveRoute) Route.get(Loc.pos, to).then((r) => { if (r && Trip.get()) drawPanel(); });
@@ -1266,7 +1265,7 @@
         Route.get(Loc.pos, to).then((r) => { if (Loc.pos && to && Route.key(Loc.pos, to) === want && !Trip.get()) drawPanel(); });
       }
       const outside = hasLoc && !D.isInKoronadal(Loc.pos);
-      const fares = hasLoc && to ? D.estimateFaresBetween(Loc.pos, to, fareOpts({ km: route ? route.km : 0 })) : [];
+      const fares = hasLoc && to ? D.estimateFaresBetween(Loc.pos, to, fareOpts(routeOpts(route))) : [];
       panel.innerHTML = `
         <div class="card">
           <div class="card-title">Plan a trip from where you are</div>
@@ -1287,7 +1286,7 @@
             <div class="hint">Tip: press ⚑ on the map, then tap any spot to set a destination that is not in the list.</div></div>
           ${to && hasLoc && !fares.length ? `<div class="form-error" style="margin:0 0 12px">${outside ? 'Your location is outside Koronadal City, so no fare can be estimated.' : 'This trip is too far for the vehicles covered by this app.'}</div>` : ''}
           ${to && hasLoc && routing && !route ? `<div class="muted small" style="margin:0 0 10px">⏳ Finding the road route…</div>` : ''}
-          ${to && hasLoc ? `<div class="quote">${fares.map((f) => `<div class="quote-row"><div class="vletter" style="background:${f.vehicle.color}">${f.vehicle.letter}</div><div class="n">${esc(f.vehicle.name)}<div class="muted small">${f.km} km ${route ? 'by road' : '(est.)'} · ~${f.minutes} min${f.discount ? ` · <s>${D.peso(f.regularLow)}–${D.peso(f.regularHigh)}</s>` : ''}</div></div><div class="p">${people() > 1 ? rangeTxt(groupFare(f).low, groupFare(f).high) : rangeTxt(f.low, f.high)}</div></div>${groupLine(f) ? `<div class="muted small group-line">${groupLine(f)}</div>` : ''}`).join('')}</div>${fares.length && fares[0].discount ? `<div class="muted small" style="margin:-8px 0 12px">${esc(passengerType().label)} fare with ${pct(passengerType())}% discount applied.</div>` : ''}` : ''}
+          ${to && hasLoc ? `<div class="quote">${fares.map((f) => `<div class="quote-row"><div class="vletter" style="background:${f.vehicle.color}">${f.vehicle.letter}</div><div class="n">${esc(f.vehicle.name)}<div class="muted small">${f.km} km ${route ? 'by road' : '(est.)'} · ~${f.minutes} min${f.discounted ? ` · <s>${rangeTxt(f.regularLow, f.regularHigh)}</s>` : ''}${f.ruleText ? `<br>${esc(f.ruleText)}` : ''}</div></div><div class="p">${people() > 1 ? rangeTxt(groupFare(f).low, groupFare(f).high) : rangeTxt(f.low, f.high)}</div></div>${groupLine(f) ? `<div class="muted small group-line">${groupLine(f)}</div>` : ''}`).join('')}</div>${fares.some((f) => f.discounted) ? `<div class="muted small" style="margin:-8px 0 12px">${esc(passengerType().label)} fare applied. Show a valid ID to the driver.</div>` : ''}` : ''}
           ${to && hasLoc && fares.length ? routeChips(route) : ''}
           <button class="btn" id="startTrip">Start trip & track fare</button>
           <button class="btn secondary" id="allRoutes" style="margin-top:8px">View route details</button>
@@ -1318,11 +1317,11 @@
         if (!ready()) return;
         const f = fares[0];
         const tp = toId === 'custom' ? toPoint : null;
-        const newTrip = { toId, toPoint: tp, vehicleId: f.vehicle.id, start: { lat: Loc.pos.lat, lng: Loc.pos.lng }, km: route ? route.km : 0, routeIndex: route ? route.index || 0 : 0, startedAt: Date.now() };
+        const newTrip = { toId, toPoint: tp, vehicleId: f.vehicle.id, start: { lat: Loc.pos.lat, lng: Loc.pos.lng }, km: route ? route.km : 0, kmOut: route ? route.kmOut : undefined, routeIndex: route ? route.index || 0 : 0, startedAt: Date.now() };
         Trip.set(newTrip);
         Recent.add({ from: 'me', fromPoint: Loc.pos, to: toId, toPoint: tp });
         if (SB) SB.sync.tripStart(newTrip, Session.id(), f, passengerType().id, people()).then((id) => { const t = Trip.get(); if (t && id) Trip.set({ ...t, remoteId: id }); }).catch(() => {});
-        toast(f ? `Trip started · ${D.peso(groupFare(f).low)}–${D.peso(groupFare(f).high)}` : 'Trip started');
+        toast(f ? `Trip started · ${rangeTxt(groupFare(f).low, groupFare(f).high)}` : 'Trip started');
         drawPanel();
       };
       $('#allRoutes').onclick = () => { if (ready()) go('fares', { fromPoint: Loc.pos, to: toId, ...(toId === 'custom' ? { toPoint } : {}) }); };
@@ -1385,7 +1384,7 @@
       const snapshot = JSON.stringify(state.params);
       Route.get(from, to).then((r) => { if (r && state.screen === 'fares' && JSON.stringify(state.params) === snapshot) render(); });
     }
-    const fares = D.estimateFaresBetween(from, to, fareOpts({ km: route ? route.km : 0 }));
+    const fares = D.estimateFaresBetween(from, to, fareOpts(routeOpts(route)));
     const km = (route ? route.km : D.roadDistanceKm(from, to)).toFixed(1);
 
     screenEl.innerHTML = `
@@ -1405,9 +1404,9 @@
               <div><div class="vname">${esc(f.vehicle.name)}</div><div class="vtag">${esc(f.vehicle.tagline)}</div></div>
               ${i === 0 ? '<span class="badge-cheapest">Cheapest</span>' : ''}
             </div>
-            <div class="price">${people() > 1 ? rangeTxt(groupFare(f).low, groupFare(f).high) : `${D.peso(f.low)} – ${D.peso(f.high)}`}${f.discount && people() === 1 ? ` <span class="muted small" style="font-weight:500"><s>${D.peso(f.regularLow)}–${D.peso(f.regularHigh)}</s></span>` : ''}</div>
+            <div class="price">${people() > 1 ? rangeTxt(groupFare(f).low, groupFare(f).high) : rangeTxt(f.low, f.high)}${f.discounted && people() === 1 ? ` <span class="muted small" style="font-weight:500"><s>${rangeTxt(f.regularLow, f.regularHigh)}</s></span>` : ''}</div>
             ${groupLine(f) ? `<div class="muted small" style="margin-bottom:6px">${groupLine(f)}</div>` : ''}
-            <div class="meta"><span>${people() > 1 ? `Total for ${people()} passengers` : f.discount ? esc(passengerType().label) + ` fare (${pct(passengerType())}% off)` : 'Estimated fare'} · ~${f.minutes} min</span><span class="view">View details ›</span></div>
+            <div class="meta"><span>${people() > 1 ? `Total for ${people()} passengers` : f.discounted ? esc(passengerType().label) + ` fare (${f.offText})` : f.rule ? 'Ordinance fare' : 'Estimated fare'} · ~${f.minutes} min</span><span class="view">View details ›</span></div>
           </button>`
           )
           .join('')}
@@ -1425,7 +1424,7 @@
       const snapshot = JSON.stringify(state.params);
       Route.get(from, to).then((r) => { if (r && state.screen === 'details' && JSON.stringify(state.params) === snapshot) render(); });
     }
-    const fare = D.estimateFaresBetween(from, to, fareOpts({ km: route ? route.km : 0 })).find((f) => f.vehicle.id === p.vehicle);
+    const fare = D.estimateFaresBetween(from, to, fareOpts(routeOpts(route))).find((f) => f.vehicle.id === p.vehicle);
     if (!fare) return go('search', {}, { replace: true });
     const v = fare.vehicle;
 
@@ -1435,9 +1434,9 @@
 
       <div class="card fare-hero">
         <div class="label">${people() > 1 ? `Estimated total for ${people()} passengers` : 'Estimated fare per passenger'}</div>
-        <div class="big">${people() > 1 ? rangeTxt(groupFare(fare).low, groupFare(fare).high) : `${D.peso(fare.low)} – ${D.peso(fare.high)}`}</div>
+        <div class="big">${people() > 1 ? rangeTxt(groupFare(fare).low, groupFare(fare).high) : rangeTxt(fare.low, fare.high)}</div>
         ${groupLine(fare) ? `<div class="muted small" style="margin-bottom:6px">${groupLine(fare)}</div>` : ''}
-        <div class="sub">${fare.discount ? `${esc(passengerType().label)} fare, ${pct(passengerType())}% discount applied · regular ${D.peso(fare.regularLow)}–${D.peso(fare.regularHigh)}` : 'Regular fare'}${fare.special ? ` · Special trip approx. ${D.peso(fare.special)}` : ''}</div>
+        <div class="sub">${fare.discounted ? `${esc(passengerType().label)} fare, ${fare.offText} · regular ${rangeTxt(fare.regularLow, fare.regularHigh)}` : 'Regular fare'}${fare.ruleText ? ` · ${esc(fare.ruleText)}` : ''}${fare.special ? ` · Special trip approx. ${D.peso(fare.special)}` : ''}</div>
         <div class="stat-row">
           <div class="stat"><div class="n">${fare.km} km</div><div class="l">${route ? 'Road distance' : 'Est. distance'}</div></div>
           <div class="stat"><div class="n">~${fare.minutes} min</div><div class="l">Travel time</div></div>
@@ -1522,7 +1521,7 @@
               if (here) {
                 const km = D.haversineKm(here, d) * 1.3;
                 const f = D.estimateFaresBetween(here, d, fareOpts()).find((x) => x.vehicle.id === 'tricycle');
-                info += ` · ${fmtKm(km)} away` + (f ? ` · ${D.peso(f.low)}–${D.peso(f.high)}` : '');
+                info += ` · ${fmtKm(km)} away` + (f ? ` · ${rangeTxt(f.low, f.high)}` : '');
               }
               return `<button class="item" data-id="${d.id}">
               <div class="icon">${d.cat.includes('barangays') ? '⌂' : d.cat.includes('terminals') ? '⇄' : '◈'}</div>
@@ -1566,7 +1565,7 @@
       if (!hasLoc) return 'Tap to see the fare from your location';
       const f = D.estimateFaresBetween(Loc.pos, pl, fareOpts()).find((x) => x.vehicle.id === 'tricycle');
       const km = D.haversineKm(Loc.pos, pl) * 1.3;
-      return f ? `${fmtKm(km)} away · about ${D.peso(f.low)}–${D.peso(f.high)} by tricycle` : `${fmtKm(km)} away`;
+      return f ? `${fmtKm(km)} away · ${rangeTxt(f.low, f.high)} by tricycle` : `${fmtKm(km)} away`;
     };
     const row = (key, label, icon, pl, hint) => pl
       ? `<div class="item saved-row">
@@ -1711,10 +1710,11 @@
         ${u.guest ? '' : row('Personal information', 'Update your name and password', 'personal')}
         ${row('Saved places', 'Manage favorite destinations', 'saved')}
         ${row('Recent searches', 'Review previous route searches', 'recent')}
-        <div class="item toggle"><div class="body"><div class="title">Passenger type</div><div class="sub">${esc(passengerType().label)}${passengerType().discount ? ` · ${pct(passengerType())}% discount` : ''}</div></div>
+        <div class="item toggle"><div class="body"><div class="title">Passenger type</div><div class="sub">${esc(passengerType().label)}</div></div>
           <select id="paxSelect" class="btn sm secondary" style="width:auto">${passengerTypes().map((t) => `<option value="${t.id}" ${t.id === passengerType().id ? 'selected' : ''}>${esc(t.label)}</option>`).join('')}</select></div>
         <div class="item toggle"><div class="body"><div class="title">Location</div><div class="sub">${esc(Loc.label())}</div></div>
           <button class="btn sm secondary" id="relocate">Use device location</button></div>
+        ${row('Tricycle fare ordinance', 'Official fares, the downtown zone and your rights', 'ordinance')}
         ${row('About & how fares work', 'Fare model, limitations, app version', 'about')}
       </div>
       ${u.guest ? '' : '<button class="btn danger" id="logout" style="margin-top:20px">Log out</button>'}`;
@@ -1769,6 +1769,86 @@
     if (c) c.addEventListener('click', () => confirmSheet('Clear recent searches?', 'Your saved places are not affected.', 'Clear', () => { Recent.clear(); render(); toast('Cleared'); }));
   };
 
+  const ORDINANCE_FIXED = [
+    ['City Mall, BDO (Morales)', 15],
+    ['Iglesia Ni Cristo, YBL, Brigada FM', 15],
+    ['New Leganes, Bagacay and Provincial Jail', 17],
+    ['Bagong Sikat, Marville Homes, Agreville, MSST, Depita Subdivision, Doña Lourdes Subdivision', 17],
+    ['Triniville Subdivision, Purok Reyes Highway and Crossing Sueno Village to Bridge, Paraiso Verde / Cinco Ninas', 17],
+    ['DXKR, Green Valley, IBED, Hall of Justice and Depita Subdivision', 17],
+    ['Purok Tuburan, Purok Nursery and Purok Hillside (Brgy. Sta. Cruz)', 17],
+    ['Agan Homes, Roamceville, Agan East, San Antonio I & II, Agreville Phase III and Hernandez Farm', 19],
+    ['Sueno Subdivision, Guanzon Subdivision, Purok Reyes and Barangay Morales Proper, EMR Center', 19],
+    ['Gaisano and Crossing Diaz, Integrated Public Transport Terminal', 19],
+    ['Crossing Barrio Dos and Purok Malipayon (Brgy. Sto. Niño)', 19],
+    ['Purok Siodina and Purok Tambling', 19],
+    ['Kings College Campus, Viajera', 21],
+    ['SOCOTECO-I, KorBel, DXKI, Regency College and Southwind Subdivision', 23],
+    ['New City Hall, Santos Subdivision, Villegas Subdivision, Purok Silangan and Allah Valley Hospital', 23],
+    ['Agan North and Lauban Subdivision', 25],
+    ['Bombo Radyo, BIR, NIA, Purok Tony Ko, Crossing Guadalupe, Crossing Megaland, Crossing Camella and Crossing Bo. 6', 25],
+    ['Megaland Subdivision', 27],
+    ['The Farm', 29],
+    ['Regional Center', 31]
+  ];
+  SCREENS.ordinance = () => {
+    const tri = D.VEHICLES.find((v) => v.id === 'tricycle') || { base: 15, perKm: 2, baseKm: 2 };
+    const level = Math.max(0, Math.min(3, Number(D.RULES.fuelLevel) || 0));
+    const types = passengerTypes();
+    const zoneFare = (t) => Math.max(0, tri.base - (t.amount || 0)) + level * (t.fuelAdd || 0);
+    screenEl.innerHTML = `
+      <h1>Tricycle fare ordinance</h1>
+      <p class="lead">The official fare rules for tricycles-for-hire in the City of Koronadal, as used by this app.</p>
+      <div class="card">
+        <div class="card-title">Downtown Base-Fare Zone</div>
+        <p class="small" style="margin:0 0 10px">Inside this zone the tricycle fare is the same no matter how far you travel. The zone is the dashed outline on the map.</p>
+        <div class="map-wrap" style="height:230px;margin-bottom:0"><div id="map"></div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Fare inside the zone${level ? ' (with gasoline adjustment)' : ''}</div>
+        <table class="fare-table">${types.map((t) => `<tr><td>${esc(t.label)}</td><td>${D.peso(zoneFare(t))}</td></tr>`).join('')}</table>
+        <p class="small muted" style="margin:10px 0 0">Per passenger. Students, senior citizens, PWDs and pupils must show a valid ID.</p>
+      </div>
+      <div class="card">
+        <div class="card-title">Going outside the zone</div>
+        <ul class="tips-list">
+          <li><strong>From the zone to a place outside it, or back:</strong> the zone fare plus ${D.peso(tri.perKm)} for every kilometre, or part of a kilometre, travelled outside the zone.</li>
+          <li><strong>Both pick-up and drop-off outside the zone:</strong> ${D.peso(tri.base)} for the first ${tri.baseKm} km, then ${D.peso(tri.perKm)} for every kilometre or part of it.</li>
+          <li><strong>Barangay-bound tricycles:</strong> fares approved by the barangay are followed.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">Fixed fares from the zone</div>
+        <p class="small muted" style="margin:0 0 8px">Regular fare per passenger. High school and college students, senior citizens and PWDs pay ₱3 less, elementary students ₱5 less, kinder and day care pupils ₱7 less.</p>
+        <table class="fare-table">${ORDINANCE_FIXED.map(([place, fare]) => `<tr><td>${esc(place)}</td><td>${D.peso(fare)}</td></tr>`).join('')}</table>
+      </div>
+      <div class="card">
+        <div class="card-title">Gasoline price adjustment</div>
+        <p class="small" style="margin:0 0 8px">Fares rise automatically with the average price of regular gasoline in the city.</p>
+        <table class="fare-table">
+          <tr><td>₱71 to ₱100 per litre</td><td>+₱5</td></tr>
+          <tr><td>₱101 to ₱130 per litre</td><td>+₱10</td></tr>
+          <tr><td>₱131 to ₱160 per litre</td><td>+₱15</td></tr>
+        </table>
+        <p class="small muted" style="margin:10px 0 0">The increase is smaller for students, senior citizens, PWDs and pupils. In effect now: <strong>${esc((D.FUEL_LEVELS[level] || D.FUEL_LEVELS[0]).label)}</strong>.</p>
+      </div>
+      <div class="card">
+        <div class="card-title">Your rights as a passenger</div>
+        <ul class="tips-list">
+          <li>The zone map and fare matrix must be posted inside every tricycle-for-hire.</li>
+          <li>Overcharging is fined <strong>₱1,000</strong> for every offense.</li>
+          <li>A tricycle with no fare matrix posted is fined ₱500.</li>
+        </ul>
+      </div>
+      <p class="small muted">Source: tricycle-for-hire fare ordinance of the City Government of Koronadal. This page is a summary; the ordinance itself is the authority.</p>`;
+    const view = createMap($('#map'), { onPick: () => {}, pickLabel: 'Close', scrollWheelZoom: false, showZone: true });
+    setTimeout(() => {
+      view.map.invalidateSize();
+      if (D.RULES.zone && D.RULES.zone.length >= 3) view.map.fitBounds(L.latLngBounds(D.RULES.zone), { padding: [16, 16] });
+    }, 60);
+    cleanup = () => view.destroy();
+  };
+
   SCREENS.about = () => {
     screenEl.innerHTML = `
       <h1>About Koronadal Ride</h1>
@@ -1776,8 +1856,11 @@
       <div class="card">
         <div class="card-title">How fares are estimated</div>
         <p class="small" style="margin:0 0 8px">The app measures the road distance from your location (or chosen starting point) to the destination using OpenStreetMap routing (or an estimate when offline), then applies each vehicle's fare rule:</p>
-        <ul class="tips-list">${D.VEHICLES.map((x) => `<li><strong>${esc(x.name)}</strong>: ${D.peso(x.base)} minimum for the first ${x.baseKm} km, then about ${D.peso(x.perKm)} per extra km.</li>`).join('')}</ul>
-        <p class="small muted" style="margin:10px 0 0">The upper value of each range allows for traffic, night trips, and driver discretion. Students, senior citizens and persons with disability receive the 20% statutory discount when their passenger type is selected.</p>
+        <ul class="tips-list">${D.VEHICLES.map((x) => (x.id === 'tricycle'
+          ? `<li><strong>${esc(x.name)}</strong>: the city fare ordinance. ${D.peso(x.base)} anywhere inside the Downtown Base-Fare Zone, plus ${D.peso(x.perKm)} for every kilometre or part of it outside the zone. This is an exact fare, not a range.</li>`
+          : `<li><strong>${esc(x.name)}</strong>: ${D.peso(x.base)} minimum for the first ${x.baseKm} km, then about ${D.peso(x.perKm)} per extra km. Shown as a range.</li>`)).join('')}</ul>
+        <p class="small muted" style="margin:10px 0 0">Habal-habal and multicab are not covered by the tricycle ordinance, so their fares are estimates; the upper value allows for traffic, night trips and driver discretion, and students, senior citizens and PWDs get 20% off.</p>
+        <button class="btn secondary" data-go="ordinance" style="margin-top:12px">Read the tricycle fare ordinance</button>
       </div>
       <div class="card">
         <div class="card-title">Live location</div>
@@ -1785,7 +1868,7 @@
       </div>
       <div class="card">
         <div class="card-title">Limitations</div>
-        <p class="small" style="margin:0">Fares are estimates and may differ from what drivers charge. The app covers Koronadal City only and does not book rides or contact drivers. The map and road routing require an internet connection.</p>
+        <p class="small" style="margin:0">Tricycle fares come from the city ordinance, but the zone boundary and distances in the app are computed from the map and can be slightly off near the edge of the zone. Other fares are estimates and may differ from what drivers charge. The app covers Koronadal City only and does not book rides or contact drivers. The map and road routing require an internet connection.</p>
       </div>
       <div class="card">
         <div class="card-title">Version</div>

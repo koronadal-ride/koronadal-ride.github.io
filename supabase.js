@@ -20,7 +20,10 @@
   function apply(D, data) {
     if (data.places && data.places.length) {
       D.DESTINATIONS.length = 0;
-      data.places.forEach((p) => D.DESTINATIONS.push({ id: p.id, name: p.name, sub: p.sub || '', cat: p.cat || [], lat: Number(p.lat), lng: Number(p.lng), road: p.road || '' }));
+      data.places.forEach((p) => D.DESTINATIONS.push({
+        id: p.id, name: p.name, sub: p.sub || '', cat: p.cat || [], lat: Number(p.lat), lng: Number(p.lng), road: p.road || '',
+        tricycleFare: p.tricycle_fare != null && Number(p.tricycle_fare) > 0 ? Number(p.tricycle_fare) : null
+      }));
     }
     if (data.vehicles && data.vehicles.length) {
       D.VEHICLES.length = 0;
@@ -31,7 +34,18 @@
       }));
     }
     if (data.discounts && data.discounts.length) {
-      D.DISCOUNTS = data.discounts.map((r) => ({ id: r.id, label: r.label, discount: Number(r.percent) / 100 }));
+      D.DISCOUNTS = data.discounts.map((r) => {
+        const base = (D.DEFAULT_DISCOUNTS || []).find((t) => t.id === r.id) || { amount: 0, fuelAdd: 0 };
+        return {
+          id: r.id, label: r.label, discount: Number(r.percent) / 100,
+          amount: r.amount != null ? Number(r.amount) : base.amount,
+          fuelAdd: r.fuel_add != null ? Number(r.fuel_add) : base.fuelAdd
+        };
+      });
+    }
+    if (data.rules && D.RULES) {
+      if (Array.isArray(data.rules.zone) && data.rules.zone.length >= 3) D.RULES.zone = data.rules.zone.map((p) => [Number(p[0]), Number(p[1])]);
+      D.RULES.fuelLevel = Number(data.rules.fuelLevel) || 0;
     }
   }
 
@@ -51,7 +65,12 @@
       ]);
       const err = p.error || v.error || r.error;
       if (err) throw err;
-      const data = { places: p.data, vehicles: v.data, discounts: r.data, at: Date.now() };
+      let rules = null;
+      try {
+        const s = await client.from('settings').select('value').eq('key', 'fare_rules').maybeSingle();
+        if (!s.error && s.data) rules = s.data.value;
+      } catch { /* settings table not created yet */ }
+      const data = { places: p.data, vehicles: v.data, discounts: r.data, rules, at: Date.now() };
       const before = localStorage.getItem(CACHE_KEY);
       const after = JSON.stringify(data);
       localStorage.setItem(CACHE_KEY, after);

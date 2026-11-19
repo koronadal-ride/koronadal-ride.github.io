@@ -354,6 +354,12 @@ h2 { font-size: 15px; margin: 22px 0 10px; font-weight: 700; }
 @keyframes pulse { 0% { transform: scale(0.5); opacity: 1; } 100% { transform: scale(1.6); opacity: 0; } }
 .pin { width: 14px; height: 14px; border-radius: 50%; background: var(--navy); border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
 .pin.selected { background: var(--green); width: 18px; height: 18px; box-shadow: 0 0 0 3px rgba(31,138,76,0.3); }
+.zone-note { margin: -6px 0 14px; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.zone-key { display: inline-block; width: 22px; height: 0; border-top: 2px dashed #b4235a; vertical-align: middle; margin-right: 7px; }
+.fare-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.fare-table td { padding: 7px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+.fare-table tr:last-child td { border-bottom: 0; }
+.fare-table td:last-child { text-align: right; font-weight: 700; white-space: nowrap; padding-left: 12px; }
 .start-pin span {
   position: relative; display: block; text-align: center; white-space: nowrap;
   background: var(--navy); color: #fff; font-size: 11px; font-weight: 700; line-height: 18px;

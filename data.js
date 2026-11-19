@@ -74,11 +74,11 @@ const VEHICLES = [
     id: 'tricycle', name: 'Tricycle', letter: 'T', color: '#2b56d6',
     tagline: 'Most common ride inside the city proper.',
     desc: 'Three-wheeled motorcycle with a sidecar. Usually shared with other passengers along the way. Available almost everywhere in Koronadal, day and night.',
-    base: 15, baseKm: 2, perKm: 3, spread: 10, speedKph: 20, minKm: 0, maxKm: 15, specialX: 3,
+    base: 15, baseKm: 2, perKm: 2, spread: 0, speedKph: 20, minKm: 0, maxKm: 15, specialX: 3,
     tips: [
       'Tell the driver your exact drop-off point before boarding.',
       'A "special trip" (whole tricycle for yourself) costs more than the regular shared fare.',
-      'Students, senior citizens and PWDs get 20% off. Show a valid ID to the driver.'
+      'Inside the Downtown Base-Fare Zone the fare is ₱15 per passenger: ₱12 for high school and college students, senior citizens and PWDs. Show a valid ID.'
     ]
   },
   {
@@ -168,32 +168,132 @@ function roundUp5(n) {
   return Math.ceil(n / 5) * 5;
 }
 
+// Tricycle fare ordinance: Downtown Base-Fare Zone and passenger types
+const RULES = {
+  fuelLevel: 0,
+  zone: [
+    [6.50657, 124.83659], [6.50553, 124.83781], [6.51001, 124.84152], [6.50748, 124.84459], [6.50962, 124.84636],
+    [6.50833, 124.84791], [6.50926, 124.84868], [6.50735, 124.85092], [6.50567, 124.85221], [6.50485, 124.85325],
+    [6.50221, 124.85107], [6.50067, 124.85288], [6.4974, 124.85219], [6.49611, 124.8537], [6.49377, 124.85183],
+    [6.49322, 124.85247], [6.49212, 124.85157], [6.49255, 124.85106], [6.49141, 124.8453], [6.48854, 124.84293],
+    [6.48959, 124.84169], [6.48919, 124.84109], [6.48899, 124.83989], [6.48926, 124.83878], [6.4912, 124.8383],
+    [6.49051, 124.83696], [6.49188, 124.83525], [6.49364, 124.83659], [6.49602, 124.8338], [6.49777, 124.83525],
+    [6.50068, 124.83178]
+  ]
+};
+const DEFAULT_ZONE = RULES.zone.map((p) => p.slice());
+const FUEL_LEVELS = [
+  { level: 0, label: 'Up to ₱70 per litre (no adjustment)' },
+  { level: 1, label: '₱71 to ₱100 per litre (+₱5 regular)' },
+  { level: 2, label: '₱101 to ₱130 per litre (+₱10 regular)' },
+  { level: 3, label: '₱131 to ₱160 per litre (+₱15 regular)' }
+];
+const DEFAULT_DISCOUNTS = [
+  { id: 'regular', label: 'Regular', discount: 0, amount: 0, fuelAdd: 5 },
+  { id: 'student', label: 'High School / College Student', discount: 0.2, amount: 3, fuelAdd: 4 },
+  { id: 'senior', label: 'Senior Citizen', discount: 0.2, amount: 3, fuelAdd: 4 },
+  { id: 'pwd', label: 'PWD', discount: 0.2, amount: 3, fuelAdd: 4 },
+  { id: 'elementary', label: 'Elementary Student', discount: 0.2, amount: 5, fuelAdd: 3 },
+  { id: 'kinder', label: 'Kinder / Day Care', discount: 0.2, amount: 7, fuelAdd: 2 }
+];
+const ZONE_TOLERANCE_KM = 0.06;
+
+function insidePolygon(p, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+    if ((yi > p.lat) !== (yj > p.lat) && p.lng < ((xj - xi) * (p.lat - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+function distToZoneKm(p) {
+  const poly = RULES.zone;
+  const kx = 110.6, ky = 110.574;
+  let best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const ax = poly[j][1] * kx, ay = poly[j][0] * ky, bx = poly[i][1] * kx, by = poly[i][0] * ky;
+    const px = p.lng * kx, py = p.lat * ky;
+    const dx = bx - ax, dy = by - ay;
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy || 1)));
+    best = Math.min(best, Math.hypot(px - (ax + t * dx), py - (ay + t * dy)));
+  }
+  return best;
+}
+function inZone(p) {
+  if (!p || !RULES.zone || RULES.zone.length < 3) return false;
+  return insidePolygon(p, RULES.zone) || distToZoneKm(p) <= ZONE_TOLERANCE_KM;
+}
+function outsideKm(coords) {
+  if (!coords || coords.length < 2) return 0;
+  let km = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const a = { lat: coords[i - 1][0], lng: coords[i - 1][1] }, b = { lat: coords[i][0], lng: coords[i][1] };
+    const mid = { lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 };
+    if (!insidePolygon(mid, RULES.zone)) km += haversineKm(a, b);
+  }
+  return km;
+}
+
+function tricycleFare(v, from, to, km, options) {
+  const a = inZone(from), b = inZone(to);
+  if (a && b) return { fare: v.base, rule: 'zone', ruleText: 'Downtown Base-Fare Zone: flat fare' };
+  if (a !== b) {
+    const out = a ? to : from;
+    if (out.tricycleFare) return { fare: Number(out.tricycleFare), rule: 'fixed', ruleText: `Fixed ordinance fare to and from ${out.name}` };
+    const kmOut = options.kmOut != null ? options.kmOut : distToZoneKm(out) * 1.3;
+    const steps = Math.max(1, Math.ceil(kmOut - 0.05));
+    return { fare: v.base + v.perKm * steps, rule: 'outside', ruleText: `₱${v.base} zone fare + ₱${v.perKm} × ${steps} km outside the zone` };
+  }
+  const steps = Math.ceil(Math.max(0, km - v.baseKm) - 0.001);
+  return { fare: v.base + v.perKm * steps, rule: 'distance', ruleText: `₱${v.base} for the first ${v.baseKm} km${steps ? ` + ₱${v.perKm} × ${steps} km` : ''}` };
+}
+
 function estimateFaresBetween(from, to, options = {}) {
   if (!from || !to) return [];
   const km = options.km || roadDistanceKm(from, to);
+  const type = options.type || null;
+  const types = (window.KR_DATA && window.KR_DATA.DISCOUNTS) || DEFAULT_DISCOUNTS;
+  const regularType = types.find((t) => t.id === 'regular') || DEFAULT_DISCOUNTS[0];
+  const fuel = Math.max(0, Math.min(3, Number(RULES.fuelLevel) || 0));
 
   return VEHICLES.filter((v) => km >= v.minKm && km <= v.maxKm)
     .map((v) => {
+      const minutes = Math.round((km / v.speedKph) * 60) + 3;
+      const common = { vehicle: v, from, to, km: Math.round(km * 10) / 10, minutes };
+
+      if (v.id === 'tricycle') {
+        const t = tricycleFare(v, from, to, km, options);
+        const regularLow = t.fare + fuel * (regularType.fuelAdd || 0);
+        const less = type ? Number(type.amount) || 0 : 0;
+        const low = type && type.id !== 'regular'
+          ? Math.max(0, t.fare - less) + fuel * (Number(type.fuelAdd) || 0)
+          : regularLow;
+        const spread = Number(v.spread) || 0;
+        return {
+          ...common,
+          low, high: low + spread, regularLow, regularHigh: regularLow + spread,
+          discount: 0, discounted: low < regularLow,
+          offText: low < regularLow ? `₱${regularLow - low} less` : '',
+          rule: t.rule,
+          ruleText: t.ruleText + (fuel ? ' · gasoline price adjustment added' : ''),
+          special: v.specialX > 1 ? roundUp5(regularLow * v.specialX) : null
+        };
+      }
+
       const extraKm = Math.max(0, km - v.baseKm);
       const raw = v.base + extraKm * v.perKm;
       const regularLow = Math.max(v.base, Math.round(raw));
-      const regularHigh = roundUp5(regularLow + v.spread);
+      const regularHigh = v.spread > 0 ? roundUp5(regularLow + v.spread) : regularLow;
       const off = options.discount || 0;
       const low = off ? Math.round(regularLow * (1 - off)) : regularLow;
       const high = off ? Math.round(regularHigh * (1 - off)) : regularHigh;
-      const minutes = Math.round((km / v.speedKph) * 60) + 3;
       return {
-        vehicle: v,
-        from,
-        to,
-        km: Math.round(km * 10) / 10,
-        low,
-        high,
-        regularLow,
-        regularHigh,
-        discount: off,
-        special: v.specialX > 1 ? roundUp5(regularLow * v.specialX) : null,
-        minutes
+        ...common,
+        low, high, regularLow, regularHigh,
+        discount: off, discounted: off > 0,
+        offText: off > 0 ? `${Math.round(off * 100)}% off` : '',
+        rule: null, ruleText: '',
+        special: v.specialX > 1 ? roundUp5(regularLow * v.specialX) : null
       };
     })
     .sort((a, b) => a.low - b.low);
@@ -217,6 +317,8 @@ function peso(n) {
 
 window.KR_DATA = {
   DESTINATIONS, CATEGORIES, VEHICLES, KORONADAL,
+  RULES, DEFAULT_ZONE, FUEL_LEVELS, DEFAULT_DISCOUNTS, DISCOUNTS: DEFAULT_DISCOUNTS.map((t) => ({ ...t })),
   findDestination, estimateFares, estimateFaresBetween, describeRoute, peso,
-  roadDistanceKm, haversineKm, nearestDestination, describePoint, isInKoronadal
+  roadDistanceKm, haversineKm, nearestDestination, describePoint, isInKoronadal,
+  inZone, outsideKm, distToZoneKm
 };

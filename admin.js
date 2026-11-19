@@ -156,11 +156,15 @@
   // Vehicles & fares
   SECTIONS.vehicles = async (main) => {
     main.innerHTML = '<h1>Vehicles & fares</h1><p class="lead">Loading…</p>';
-    const [{ data: vehicles, error }, { data: history }] = await Promise.all([
+    const [{ data: vehicles, error }, { data: history }, rulesRes] = await Promise.all([
       sb.from('vehicles').select('*').order('base'),
-      sb.from('fare_history').select('*').order('changed_at', { ascending: false }).limit(30)
+      sb.from('fare_history').select('*').order('changed_at', { ascending: false }).limit(30),
+      sb.from('settings').select('value').eq('key', 'fare_rules').maybeSingle()
     ]);
     if (error) throw error;
+    const rulesReady = !rulesRes.error;
+    const rules = { fuelLevel: 0, zone: D.DEFAULT_ZONE.map((q) => q.slice()), ...((rulesRes.data && rulesRes.data.value) || {}) };
+    if (!Array.isArray(rules.zone) || rules.zone.length < 3) rules.zone = D.DEFAULT_ZONE.map((q) => q.slice());
     const num = (name, v, step = '0.01') => `<input class="num" type="number" step="${step}" name="${name}" value="${v}" />`;
     main.innerHTML = `
       <h1>Vehicles & fares</h1><p class="lead">Edit a row and press Save. Every phone gets the new rates the next time the app opens.</p>
@@ -172,8 +176,17 @@
           <td><input type="checkbox" name="active" ${v.active ? 'checked' : ''} /></td>
           <td><button class="btn sm" data-save="${v.id}">Save</button></td></tr>`).join('')}</tbody></table>
       </div>
+      <h2>Tricycle fare ordinance</h2>
+      ${rulesReady ? `<div class="card">
+        <div class="field"><label>Average gasoline price in the city (sets the fare adjustment)</label>
+          <div class="row"><select id="fuelLevel">${D.FUEL_LEVELS.map((f) => `<option value="${f.level}" ${Number(rules.fuelLevel) === f.level ? 'selected' : ''}>${esc(f.label)}</option>`).join('')}</select>
+          <button class="btn" id="saveFuel">Save</button></div></div>
+        <div class="field" style="margin-bottom:0"><label>Downtown Base-Fare Zone: drag a point to adjust the boundary</label>
+          <div id="zoneMap" style="height:380px;border-radius:12px;border:1px solid var(--border)"></div>
+          <div class="row" style="margin-top:10px"><button class="btn" id="saveZone">Save zone</button><button class="btn outline" id="resetZone">Reset to the ordinance map</button></div></div>
+      </div>` : '<div class="card small">Run the ordinance SQL in Supabase first, then reload this page to set the gasoline bracket and the zone.</div>'}
       <h2>How the fare is computed</h2>
-      <div class="card small">Fare range per passenger = <strong>minimum fare</strong> for the first <strong>covered km</strong>, plus <strong>per extra km</strong> for the distance beyond that. The upper value adds the <strong>range width</strong> and rounds up to ₱5. Discounted passenger types reduce both values by the percentage set under Discounts.</div>
+      <div class="card small"><strong>Tricycle</strong> follows the city ordinance: the <strong>minimum fare</strong> anywhere inside the Downtown Base-Fare Zone, plus <strong>per extra km</strong> for every kilometre or part of it outside the zone. When both ends are outside the zone, the minimum fare covers the first <strong>covered km</strong>. A place with a fixed tricycle fare (set under Places) uses that fare. Passenger types take a fixed peso amount off (set under Discounts). Leave the tricycle's range width at 0 for an exact fare.<br><br><strong>Other vehicles</strong>: minimum fare for the first covered km, plus per extra km beyond that. The upper value adds the range width and rounds up to ₱5. Discounted passenger types take the percentage set under Discounts off both values.</div>
       <h2>Fare change history</h2>
       <div class="card">${history && history.length ? `<table><thead><tr><th>When</th><th>Vehicle</th><th>Minimum</th><th>Covers</th><th>Per km</th><th>Range</th></tr></thead><tbody>
         ${history.map((h) => `<tr><td class="small muted">${when(h.changed_at)}</td><td>${esc((vehicles.find((v) => v.id === h.vehicle_id) || {}).name || h.vehicle_id)}</td><td>${peso(h.base)}</td><td>${h.base_km} km</td><td>${peso(h.per_km)}</td><td>+${peso(h.spread)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No changes recorded yet.</p>'}</div>`;
@@ -187,6 +200,34 @@
       b.disabled = false;
       if (e2) return fail(e2); toast('Fare saved'); SECTIONS.vehicles(main);
     }));
+
+    if (!rulesReady) return;
+    const saveRules = async (patch, msg) => {
+      Object.assign(rules, patch);
+      const { error: e3 } = await sb.from('settings').upsert({ key: 'fare_rules', value: { fuelLevel: Number(rules.fuelLevel) || 0, zone: rules.zone } });
+      if (e3) return fail(e3);
+      toast(msg);
+    };
+    $('#saveFuel').addEventListener('click', () => saveRules({ fuelLevel: Number($('#fuelLevel').value) }, 'Gasoline bracket saved'));
+    const zmap = L.map('zoneMap', { scrollWheelZoom: false }).setView([D.KORONADAL.center.lat, D.KORONADAL.center.lng], 14);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(zmap);
+    let shape = null, handles = [];
+    const drawZone = (pts, fit) => {
+      if (shape) shape.remove();
+      handles.forEach((h) => h.remove());
+      shape = L.polygon(pts, { color: '#b4235a', weight: 2, dashArray: '7 6', fillOpacity: 0.06 }).addTo(zmap);
+      handles = pts.map((q, i) => {
+        const h = L.marker(q, { draggable: true, icon: L.divIcon({ className: 'pin selected', iconSize: [14, 14] }), title: `Point ${i + 1}` }).addTo(zmap);
+        h.on('drag', () => { const ll = h.getLatLng(); pts[i] = [Number(ll.lat.toFixed(5)), Number(ll.lng.toFixed(5))]; shape.setLatLngs(pts); });
+        return h;
+      });
+      if (fit) zmap.fitBounds(shape.getBounds(), { padding: [20, 20] });
+    };
+    drawZone(rules.zone, true);
+    setTimeout(() => zmap.invalidateSize(), 80);
+    $('#saveZone').addEventListener('click', () => saveRules({ zone: rules.zone }, 'Zone saved'));
+    $('#resetZone').addEventListener('click', () => { rules.zone = D.DEFAULT_ZONE.map((q) => q.slice()); drawZone(rules.zone, true); toast('Zone reset. Press Save zone to keep it.'); });
+    cleanup = () => { zmap.remove(); };
   };
 
   // Discounts
@@ -195,21 +236,23 @@
     const { data, error } = await sb.from('discount_rules').select('*').order('sort_order');
     if (error) throw error;
     main.innerHTML = `
-      <h1>Discounts</h1><p class="lead">Passenger types shown in the app and the percentage taken off the regular fare.</p>
-      <div class="card">
-        <table><thead><tr><th>ID</th><th>Label shown in app</th><th>Discount %</th><th>Active</th><th></th></tr></thead>
+      <h1>Discounts</h1><p class="lead">Passenger types shown in the app. Tricycles use the peso amounts from the city ordinance; other vehicles use the percentage.</p>
+      <div class="card" style="overflow:auto">
+        <table><thead><tr><th>ID</th><th>Label shown in app</th><th>Tricycle: ₱ less</th><th>Tricycle: ₱ added per gasoline bracket</th><th>Other vehicles: % off</th><th>Active</th><th></th></tr></thead>
         <tbody>${data.map((r) => `<tr data-id="${r.id}">
           <td class="muted">${esc(r.id)}</td>
           <td><input name="label" value="${esc(r.label)}" /></td>
+          <td><input class="num" type="number" step="1" min="0" name="amount" value="${r.amount == null ? 0 : r.amount}" ${r.id === 'regular' ? 'disabled' : ''} /></td>
+          <td><input class="num" type="number" step="1" min="0" name="fuel_add" value="${r.fuel_add == null ? 0 : r.fuel_add}" /></td>
           <td><input class="num" type="number" step="1" min="0" max="100" name="percent" value="${r.percent}" ${r.id === 'regular' ? 'disabled' : ''} /></td>
           <td><input type="checkbox" name="active" ${r.active ? 'checked' : ''} ${r.id === 'regular' ? 'disabled' : ''} /></td>
           <td><button class="btn sm" data-save="${r.id}">Save</button></td></tr>`).join('')}</tbody></table>
-        <p class="muted small" style="margin:12px 0 0">The 20% discount for students, senior citizens and persons with disability is set by law; change it here only if the regulation changes.</p>
+        <p class="muted small" style="margin:12px 0 0">Ordinance values: high school and college students, senior citizens and PWDs pay ₱3 less, elementary students ₱5 less, kinder and day care pupils ₱7 less. For each gasoline bracket the fare rises ₱5 regular, ₱4, ₱3 and ₱2 in the same order.</p>
       </div>`;
     $$('[data-save]').forEach((b) => b.addEventListener('click', async () => {
       const tr = b.closest('tr');
-      const patch = { label: $('[name=label]', tr).value.trim(), percent: Number($('[name=percent]', tr).value), active: $('[name=active]', tr).checked };
-      if (!patch.label || !(patch.percent >= 0 && patch.percent <= 100)) return toast('Please enter a label and a percentage from 0 to 100');
+      const patch = { label: $('[name=label]', tr).value.trim(), percent: Number($('[name=percent]', tr).value), amount: Number($('[name=amount]', tr).value), fuel_add: Number($('[name=fuel_add]', tr).value), active: $('[name=active]', tr).checked };
+      if (!patch.label || !(patch.percent >= 0 && patch.percent <= 100) || !(patch.amount >= 0) || !(patch.fuel_add >= 0)) return toast('Please enter a label and valid numbers');
       const { error: e2 } = await sb.from('discount_rules').update(patch).eq('id', b.dataset.save);
       if (e2) return fail(e2); toast('Discount saved'); SECTIONS.discounts(main);
     }));
@@ -273,6 +316,7 @@
           <div class="field"><label>Short description (e.g. Shopping, School)</label><input id="pSub" value="${esc(p.sub)}" /></div>
           <div class="field"><label>Road / street</label><input id="pRoad" value="${esc(p.road)}" /></div>
           <div class="field"><label>ID (letters, numbers, dashes)</label><input id="pId" value="${esc(p.id)}" ${isNew ? '' : 'disabled'} placeholder="e.g. new-mall" /></div>
+          <div class="field"><label>Fixed tricycle fare from the downtown zone (₱, leave blank if none)</label><input id="pFare" class="num" type="number" step="1" min="0" value="${p.tricycle_fare == null ? '' : p.tricycle_fare}" style="width:130px" /></div>
         </div>
         <div class="field"><label>Categories</label><div class="row">${CATS.map((c) => `<label class="small"><input type="checkbox" value="${c}" ${(p.cat || []).includes(c) ? 'checked' : ''} class="cat" /> ${c}</label>`).join('')}</div></div>
         <div class="field"><label>Position: tap the map, or type coordinates</label>
@@ -293,8 +337,10 @@
           id: isNew ? $('#pId').value.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') : p.id,
           name: $('#pName').value.trim(), sub: $('#pSub').value.trim(), road: $('#pRoad').value.trim(),
           cat: $$('.cat').filter((c) => c.checked).map((c) => c.value),
-          lat: Number($('#pLat').value), lng: Number($('#pLng').value), active: $('#pActive').checked
+          lat: Number($('#pLat').value), lng: Number($('#pLng').value), active: $('#pActive').checked,
+          tricycle_fare: $('#pFare').value.trim() === '' ? null : Number($('#pFare').value)
         };
+        if (rec.tricycle_fare !== null && !(rec.tricycle_fare > 0)) return toast('Enter a valid fixed fare, or leave it blank');
         if (!rec.id || !rec.name) return toast('Please enter an ID and a name');
         if (!rec.cat.length) return toast('Choose at least one category');
         if (!D.isInKoronadal(rec)) return toast('That position is outside Koronadal City');
