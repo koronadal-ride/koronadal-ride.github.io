@@ -805,7 +805,55 @@
   }
 
   // Routing
+  function distToLineM(pos, coords) {
+    const kx = 111320 * Math.cos(pos.lat * Math.PI / 180);
+    const ky = 110540;
+    let best = Infinity;
+    for (let i = 1; i < coords.length; i += 1) {
+      const ax = (coords[i - 1][1] - pos.lng) * kx, ay = (coords[i - 1][0] - pos.lat) * ky;
+      const dx = (coords[i][1] - pos.lng) * kx - ax, dy = (coords[i][0] - pos.lat) * ky - ay;
+      const len = dx * dx + dy * dy;
+      const t = len ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len)) : 0;
+      const d = Math.hypot(ax + t * dx, ay + t * dy);
+      if (d < best) best = d;
+    }
+    return best;
+  }
   const Route = {
+    viaDone: new Map(),
+    viaPending: new Map(),
+    viaKey: (a, vias, b) => [a, ...vias, b].map((q) => `${q.lat.toFixed(4)},${q.lng.toFixed(4)}`).join('>'),
+    viaCached(a, vias, b) {
+      return this.viaDone.get(this.viaKey(a, vias, b)) || null;
+    },
+    viaGet(a, vias, b) {
+      const k = this.viaKey(a, vias, b);
+      if (this.viaDone.has(k)) return Promise.resolve(this.viaDone.get(k));
+      if (this.viaPending.has(k)) return this.viaPending.get(k);
+      const p = (async () => {
+        try {
+          const ctl = new AbortController();
+          const t = setTimeout(() => ctl.abort(), 8000);
+          const pts = [a, ...vias, b].map((q) => `${q.lng},${q.lat}`).join(';');
+          const r = await fetch(`https://router.project-osrm.org/route/v1/driving/${pts}?overview=full&geometries=geojson&continue_straight=false`, { signal: ctl.signal });
+          clearTimeout(t);
+          const j = await r.json();
+          const rt = (j.routes || [])[0];
+          if (!rt) return null;
+          const coords = rt.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+          if (coords.length < 2) return null;
+          const res = { coords, km: Math.max(0.1, Math.round(rt.distance / 100) / 10), minutes: Math.round(rt.duration / 60), meters: rt.distance, kmOut: D.outsideKm(coords), key: k };
+          this.viaDone.set(k, res);
+          return res;
+        } catch {
+          return null;
+        } finally {
+          this.viaPending.delete(k);
+        }
+      })();
+      this.viaPending.set(k, p);
+      return p;
+    },
     pending: new Map(),
     done: new Map(),
     failed: new Map(),
@@ -935,11 +983,11 @@
       lines.forEach((l) => l.remove());
       lines = [];
     }
-    function drawLine(from, to) {
+    function drawLine(from, to, follow) {
       if (!from || !to) { clearLines(); lineSig = null; fitSig = null; return; }
       const key = Route.key(from, to);
       const cached = Route.cached(from, to);
-      const sig = cached ? `${key}|${cached.index || 0}|${(cached.options || []).length}` : `${key}|pending`;
+      const sig = cached ? `${key}|${cached.index || 0}|${(cached.options || []).length}|${follow ? follow.key : ''}` : `${key}|pending`;
       if (sig === lineSig) return;
       clearLines();
       lineSig = sig;
@@ -947,11 +995,11 @@
         const dashed = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: '#1f8a4c', weight: 3, dashArray: '6 6', interactive: false }).addTo(map);
         lines.push(dashed);
         if (fitSig !== sig) { fitSig = sig; map.fitBounds(dashed.getBounds(), { padding: [40, 40], maxZoom: 16 }); }
-        Route.get(from, to).then((r) => { if (r && lineSig === sig) drawLine(from, to); });
+        Route.get(from, to).then((r) => { if (r && lineSig === sig) drawLine(from, to, follow); });
         return;
       }
       const options = cached.options && cached.options.length ? cached.options : [cached];
-      const chosen = cached.index || 0;
+      const chosen = follow ? -1 : cached.index || 0;
       options.forEach((o, i) => {
         if (i === chosen) return;
         const pick = () => {
@@ -966,8 +1014,9 @@
         touch.on('click', pick);
         lines.push(faded, touch);
       });
-      const guard = L.polyline(options[chosen].coords, { color: '#000', weight: 18, opacity: 0 }).addTo(map);
-      const main = L.polyline(options[chosen].coords, { color: '#1f8a4c', weight: 5, lineCap: 'round' }).addTo(map);
+      const mainCoords = follow ? follow.coords : options[chosen].coords;
+      const guard = L.polyline(mainCoords, { color: '#000', weight: 18, opacity: 0 }).addTo(map);
+      const main = L.polyline(mainCoords, { color: '#1f8a4c', weight: 5, lineCap: 'round' }).addTo(map);
       lines.push(guard, main);
       const fitKey = `${key}|routes`;
       if (fitSig !== fitKey) {
@@ -1136,24 +1185,78 @@
     });
     setTimeout(() => view.map.invalidateSize(), 50);
 
-    function routeChips(r) {
-      if (!r || !r.options || r.options.length < 2) return '';
+    function routeChips(r, followed) {
+      if (!r || !r.options || (r.options.length < 2 && !followed)) return '';
       return `<div class="field"><label>Route the driver is taking</label>
-        <div class="chips" id="routeChips">${r.options.map((o, i) =>
-          `<button class="chip ${i === r.index ? 'active' : ''}" data-route="${i}">${i === 0 ? 'Shortest' : `Route ${i + 1}`} · ${fmtKm(o.km)}</button>`).join('')}</div>
-        <div class="hint">The green line is the selected route. If the driver takes another road, tap a grey line on the map or choose it here. The fare follows the selected route.</div></div>`;
+        <div class="chips" id="routeChips">${followed ? `<button class="chip active" disabled>Road taken · ${fmtKm(followed.km)}</button>` : ''}${r.options.map((o, i) =>
+          `<button class="chip ${!followed && i === r.index ? 'active' : ''}" data-route="${i}">${i === 0 ? 'Shortest' : `Route ${i + 1}`} · ${fmtKm(o.km)}</button>`).join('')}</div>
+        <div class="hint">The green line is the route used for the fare. During a trip the app follows the road the driver takes and updates the fare by itself. You can also tap a grey line on the map or choose a route here.</div></div>`;
     }
-    function setTripRoute(r) {
+    function setTripRoute(r, auto) {
       const t = Trip.get();
       if (!t || !r) return;
       const dest = resolveTo(t.toId, t.toPoint, t.toName);
       const all = dest ? D.estimateFaresBetween(t.start, dest, fareOpts(routeOpts(r))) : [];
       const f = all.find((x) => x.vehicle.id === t.vehicleId) || all[0];
-      const updated = { ...t, km: r.km, kmOut: r.kmOut, routeIndex: r.index || 0, vehicleId: f ? f.vehicle.id : t.vehicleId };
+      const updated = { ...t, km: r.km, kmOut: r.kmOut, routeIndex: r.via ? t.routeIndex || 0 : r.index || 0, vehicleId: f ? f.vehicle.id : t.vehicleId, via: r.via || undefined, hold: !auto };
       Trip.set(updated);
       if (SB && updated.remoteId && f) SB.sync.tripUpdate(updated.remoteId, { toId: t.toId, toPoint: t.toPoint, toName: t.toName, vehicleId: updated.vehicleId, km: r.km, fare: f }).catch(() => {});
       const g = f ? groupFare(f) : null;
-      toast(`Route changed · ${fmtKm(r.km)}${g ? ` · ${rangeTxt(g.low, g.high)}` : ''}`);
+      toast(`${auto ? 'The driver took another road. Route updated' : 'Route changed'} · ${fmtKm(r.km)}${g ? ` · ${rangeTxt(g.low, g.high)}` : ''}`);
+    }
+    const follow = { off: 0, since: 0, busy: false, wait: 0 };
+    function followTrip() {
+      const t = Trip.get();
+      const pos = Loc.pos;
+      if (!t || !pos || follow.busy || mode) return;
+      if (Loc.source === 'ip' || (Loc.source === 'gps' && (!pos.accuracy || pos.accuracy > 60))) return;
+      const to = resolveTo(t.toId, t.toPoint, t.toName);
+      const base = to ? Route.cached(t.start, to) : null;
+      if (!to || !base) return;
+      if (D.haversineKm(pos, t.start) < 0.06 || D.haversineKm(pos, to) < 0.12) { follow.off = 0; return; }
+      const vias = t.via || [];
+      const followed = vias.length ? Route.viaCached(t.start, vias, to) : null;
+      if (vias.length && !followed) return;
+      const options = base.options && base.options.length ? base.options : [base];
+      const tol = 40 + Math.min(pos.accuracy || 0, 25);
+      const current = followed ? followed.coords : (options[t.routeIndex || 0] || options[0]).coords;
+      if (distToLineM(pos, current) <= tol) {
+        follow.off = 0;
+        if (t.hold) Trip.set({ ...t, hold: false });
+        return;
+      }
+      if (t.hold) return;
+      const now = Date.now();
+      if (!follow.off) follow.since = now;
+      follow.off += 1;
+      const sure = Loc.source === 'manual' || (follow.off >= 2 && now - follow.since >= 4000);
+      if (!sure || now < follow.wait) return;
+      if (!vias.length) {
+        let best = -1, bestD = Infinity;
+        options.forEach((o, i) => { const d = distToLineM(pos, o.coords); if (d <= tol && d < bestD) { best = i; bestD = d; } });
+        if (best >= 0) {
+          follow.off = 0;
+          setTripRoute(Route.choose(t.start, to, best), true);
+          return;
+        }
+      }
+      const here = { lat: Number(pos.lat.toFixed(5)), lng: Number(pos.lng.toFixed(5)) };
+      const next = vias.slice();
+      const last = next[next.length - 1];
+      if (last && (D.haversineKm(last, here) < 0.1 || next.length >= 8)) next[next.length - 1] = here; else next.push(here);
+      follow.busy = true;
+      Route.viaGet(t.start, next, to).then((r) => {
+        follow.busy = false;
+        const cur = Trip.get();
+        if (!cur || cur.hold || cur.startedAt !== t.startedAt || cur.toId !== t.toId || JSON.stringify(cur.toPoint || null) !== JSON.stringify(t.toPoint || null)) return;
+        const chain = [t.start, ...next, to];
+        let crow = 0;
+        for (let i = 1; i < chain.length; i += 1) crow += D.haversineKm(chain[i - 1], chain[i]);
+        if (!r || r.meters / 1000 > crow * 2.2 + 0.6) { follow.wait = Date.now() + 30000; return; }
+        follow.off = 0;
+        setTripRoute({ ...r, via: next }, true);
+        drawPanel();
+      });
     }
 
     function askChange(id, point) {
@@ -1182,7 +1285,7 @@
       if (!all.length) { toast('No vehicle covers that distance from where you started.'); return; }
       const f = all.find((x) => x.vehicle.id === t.vehicleId) || all[0];
       const switched = f.vehicle.id !== t.vehicleId;
-      const updated = { ...t, toId: id, toPoint: id === 'custom' ? point : null, toName: undefined, km, kmOut: r ? r.kmOut : undefined, routeIndex: r ? r.index || 0 : 0, vehicleId: f.vehicle.id, arrivedNotified: false, changed: (t.changed || 0) + 1 };
+      const updated = { ...t, toId: id, toPoint: id === 'custom' ? point : null, toName: undefined, km, kmOut: r ? r.kmOut : undefined, routeIndex: r ? r.index || 0 : 0, vehicleId: f.vehicle.id, arrivedNotified: false, changed: (t.changed || 0) + 1, via: undefined, hold: true };
       Trip.set(updated);
       toId = id;
       toPoint = updated.toPoint;
@@ -1253,6 +1356,9 @@
         let tripRoute = Route.cached(trip.start, to);
         if (!tripRoute) Route.get(trip.start, to).then((r) => { if (r && Trip.get()) drawPanel(); });
         else if (trip.routeIndex && tripRoute.index !== trip.routeIndex && tripRoute.options && tripRoute.options[trip.routeIndex]) tripRoute = Route.choose(trip.start, to, trip.routeIndex);
+        const vias = trip.via || [];
+        const followed = vias.length ? Route.viaCached(trip.start, vias, to) : null;
+        if (vias.length && !followed) Route.viaGet(trip.start, vias, to).then((r) => { if (r && Trip.get()) drawPanel(); });
         const v = D.VEHICLES.find((x) => x.id === trip.vehicleId) || D.VEHICLES[0];
         const all = D.estimateFaresBetween(trip.start, to, fareOpts({ km: trip.km || 0, kmOut: trip.kmOut }));
         const fare = all.find((f) => f.vehicle.id === v.id) || all[0];
@@ -1274,18 +1380,18 @@
               <div class="stat"><div class="n">${fare ? rangeTxt(groupFare(fare).low, groupFare(fare).high) : '—'}</div><div class="l">${esc(v.name)} fare${people() > 1 ? ` · ${people()} people` : ''}</div></div>
             </div>
             <div class="progress"><div style="width:${pct}%"></div></div>
-            <div class="muted small">${pct}% of the trip completed · fare computed from where the trip started (${fmtKm(total)})${fare ? esc(fareNote(fare)) : ''}</div>
+            <div class="muted small">${pct}% of the trip completed · fare computed from where the trip started (${fmtKm(total)}${followed ? ', along the road taken' : ''})${fare ? esc(fareNote(fare)) : ''}</div>
             ${fare && groupLine(fare) ? `<div class="muted small">${groupLine(fare)}</div>` : ''}
             <div class="field" style="margin-top:12px"><label>Vehicle you are riding</label>
               <select id="tripVehicle">${D.VEHICLES.map((x) => `<option value="${x.id}" ${x.id === v.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
-            ${routeChips(tripRoute)}
+            ${routeChips(tripRoute, followed)}
             <div class="field"><label>Changed your mind? Choose a new destination</label>
               <select id="tripTo">${trip.toId === 'custom' ? `<option value="custom" selected>⚑ Pinned location (${esc(to.sub)})</option>` : ''}${destOptions(trip.toId, 'Choose a new destination')}</select>
               <div class="hint">You can also tap a pin on the map, or press ⚑ and tap any spot. The trip keeps going and the fare is recomputed from where it started.</div></div>
             <button class="btn ${arrived ? '' : 'danger'}" id="endTrip">${arrived ? 'Finish trip' : 'End trip'}</button>
           </div>`;
         view.highlight(to.id);
-        view.drawLine(trip.start, to);
+        view.drawLine(trip.start, to, followed);
         $('#tripVehicle').onchange = (e) => { Trip.set({ ...(Trip.get() || trip), vehicleId: e.target.value }); drawPanel(); };
         $$('[data-route]', panel).forEach((b) => (b.onclick = () => {
           const r = Route.choose(trip.start, to, Number(b.dataset.route));
@@ -1385,6 +1491,7 @@
       updateStatus();
       view.showUser(Loc.pos, Loc.source !== 'gps' || !view._centered);
       if (Loc.pos) view._centered = true;
+      followTrip();
       drawPanel();
     });
     updateStatus();
