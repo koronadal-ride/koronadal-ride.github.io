@@ -306,7 +306,7 @@
       ios: [
         'Open <strong>Settings → Privacy &amp; Security → Location Services</strong> and turn it on.',
         'In the same list, tap <strong>Safari Websites</strong>. Choose <strong>While Using the App</strong> and turn on <strong>Precise Location</strong>.',
-        app ? 'If you tapped <strong>Don\'t Allow</strong> before, remove the Koronadal Ride icon from the Home Screen and add it again from Safari. Then open it and tap <strong>Allow</strong> when it asks for your location.' : 'Reload this page and tap <strong>Allow</strong> when Safari asks for your location.',
+        app ? 'Tap <strong>Try again</strong> below, then choose <strong>Allow</strong> when the phone asks. If it never asks, remove the Koronadal Ride icon from the Home Screen and add it again from Safari.' : 'Reload this page and tap <strong>Allow</strong> when Safari asks for your location.',
         'Go outdoors or near a window and wait a few seconds for the GPS to settle.'
       ],
       desktop: [
@@ -318,7 +318,8 @@
     openSheet(
       `<h3>Get an accurate location</h3>
        <p class="muted small" style="margin:0 0 10px">The app needs the device's precise location. Check these in order:</p>
-       <ol class="tips-list" style="margin-bottom:14px">${steps.map((t) => `<li>${t}</li>`).join('')}</ol>
+       <ol class="tips-list" style="margin-bottom:10px">${steps.map((t) => `<li>${t}</li>`).join('')}</ol>
+       <p class="muted small" style="margin:0 0 14px">Phone's answer: ${esc(Loc.diagText())}</p>
        <button class="btn" id="lhRetry">Try again</button>
        <button class="btn outline" id="lhManual">Set my location on the map instead</button>`,
       (root) => {
@@ -327,7 +328,25 @@
       }
     );
   }
+  function askLocationSheet() {
+    openSheet(
+      `<h3>Turn on live location</h3>
+       <p class="muted small" style="margin:0 0 14px">Tap the button, then choose <strong>Allow</strong> when the phone asks.</p>
+       <button class="btn" id="laGo">Turn on live location</button>
+       <button class="btn outline" id="laManual">Set my location on the map instead</button>`,
+      (root) => {
+        $('#laGo', root).onclick = () => { closeSheet(); Loc.askFirst = false; Loc.asked = true; Loc.start(); toast('Locating with the device…'); };
+        $('#laManual', root).onclick = () => { closeSheet(); toast('Press ✎ on the map, then tap where you are'); };
+      }
+    );
+  }
   const Loc = {
+    blocked: false,
+    askFirst: false,
+    askShown: false,
+    asked: false,
+    startedAt: 0,
+    diag: null,
     pos: null,
     source: null,
     status: 'idle',
@@ -411,8 +430,24 @@
       return a < 1000 ? `±${Math.max(5, Math.round(a / 5) * 5)} m` : `±${(a / 1000).toFixed(1)} km`;
     },
     autoStart() {
+      if (this.askFirst) {
+        if (!this.askShown) { this.askShown = true; setTimeout(askLocationSheet, 500); }
+        return;
+      }
+      if (this.blocked) return;
       if (this.deniedAt && Date.now() - this.deniedAt < 15000) return;
       this.start();
+    },
+    note(err) {
+      this.diag = { code: err.code, message: String(err.message || '').slice(0, 90), ms: Date.now() - this.startedAt };
+    },
+    diagText() {
+      const where = `${{ ios: 'iPhone', android: 'Android', desktop: 'Computer' }[platform()]}, ${isStandalone() ? 'Home Screen app' : 'browser'}`;
+      if (this.source === 'gps' && this.pos) return `Working ${this.accText()} (${where})`;
+      const d = this.diag;
+      if (!d) return `${this.status === 'locating' ? 'No answer yet' : 'Not asked yet'} (${where})`;
+      const what = { 1: 'Permission denied', 2: 'Position unavailable', 3: 'Timed out' }[d.code] || 'Error';
+      return `${what} after ${(d.ms / 1000).toFixed(1)} s${d.message ? `: ${d.message}` : ''} (${where})`;
     },
     stop() {
       const geo = navigator.geolocation;
@@ -428,6 +463,8 @@
       this.status = 'locating';
       this.fellBack = false;
       this.restarts = 0;
+      this.startedAt = Date.now();
+      this.diag = null;
       this.emit();
       this.watchPrecise();
       this.watchCoarse();
@@ -435,7 +472,9 @@
     denied() {
       this.stop();
       this.deniedAt = Date.now();
+      this.blocked = true;
       this.status = 'idle';
+      if (this.asked) { this.asked = false; setTimeout(locationHelpSheet, 400); }
       this.fallback('Location permission was denied. Allow location for this app in your phone or browser settings, then tap "Use device location".');
     },
     noFix(err) {
@@ -448,6 +487,7 @@
       this.watchId = geo.watchPosition(
         (p) => this.accept(p),
         (err) => {
+          this.note(err);
           if (err.code === 1) return this.denied();
           if (this.coarseId === null) this.watchCoarse();
           if (this.source !== 'gps' && this.restarts < 6) {
@@ -464,6 +504,7 @@
       this.coarseId = navigator.geolocation.watchPosition(
         (p) => this.accept(p),
         (err) => {
+          if (this.source !== 'gps') this.note(err);
           if (err.code === 1) return this.denied();
           this.noFix(err);
         },
@@ -507,8 +548,15 @@
           }
         } catch { /* not supported */ }
       }
+      if (this.blocked && platform() === 'ios') {
+        try { sessionStorage.setItem('kr-loc-ask', '1'); } catch { /* private mode */ }
+        location.reload();
+        return;
+      }
       this.lastError = '';
       this.deniedAt = 0;
+      this.blocked = false;
+      this.askFirst = false;
       this.stop();
       this.source = null;
       this.pos = null;
@@ -533,9 +581,14 @@
   ['focusout', 'change'].forEach((ev) => document.addEventListener(ev, () => setTimeout(() => Loc.flush(), 60), true));
   setInterval(() => Loc.flush(), 2000);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible' || Loc.source === 'manual') return;
-    if (Loc.source === 'gps' && Date.now() - Loc.fixAt > 30000) { Loc.stop(); Loc.status = 'idle'; Loc.start(); }
+    if (document.visibilityState !== 'visible' || Loc.source === 'manual' || Loc.blocked || Loc.askFirst) return;
+    if (Loc.watchId === null && Loc.coarseId === null) return;
+    const now = Date.now();
+    if (now - Loc.fixAt > 30000 && now - Loc.startedAt > 30000) { Loc.stop(); Loc.status = 'idle'; Loc.start(); }
   });
+  try {
+    if (sessionStorage.getItem('kr-loc-ask')) { sessionStorage.removeItem('kr-loc-ask'); Loc.askFirst = true; }
+  } catch { /* private mode */ }
 
   function originFromPoint(pos) {
     const n = D.nearestDestination(pos);
@@ -1167,7 +1220,7 @@
       if (Loc.pos) {
         view.map.flyTo([Loc.pos.lat, Loc.pos.lng], Math.max(view.map.getZoom(), 16), { duration: 0.8 });
         toast('Centered on your location');
-      } else if (Loc.status !== 'locating') {
+      } else if (Loc.status !== 'locating' || Date.now() - Loc.startedAt > 20000) {
         Loc.useDevice();
         toast('Locating…');
       } else {
@@ -1819,7 +1872,7 @@
       </div>
       <div class="card">
         <div class="card-title">Fixed fares from the zone</div>
-        <p class="small muted" style="margin:0 0 8px">Regular fare per passenger. High school and college students, senior citizens and PWDs pay ₱3 less, elementary students ₱5 less, kinder and day care pupils ₱7 less.</p>
+        <p class="small muted" style="margin:0 0 8px">Regular fare per passenger. High school and college students, senior citizens and PWDs pay ₱3 less.</p>
         <table class="fare-table">${ORDINANCE_FIXED.map(([place, fare]) => `<tr><td>${esc(place)}</td><td>${D.peso(fare)}</td></tr>`).join('')}</table>
       </div>
       <div class="card">

@@ -192,9 +192,7 @@ const DEFAULT_DISCOUNTS = [
   { id: 'regular', label: 'Regular', discount: 0, amount: 0, fuelAdd: 5 },
   { id: 'student', label: 'High School / College Student', discount: 0.2, amount: 3, fuelAdd: 4 },
   { id: 'senior', label: 'Senior Citizen', discount: 0.2, amount: 3, fuelAdd: 4 },
-  { id: 'pwd', label: 'PWD', discount: 0.2, amount: 3, fuelAdd: 4 },
-  { id: 'elementary', label: 'Elementary Student', discount: 0.2, amount: 5, fuelAdd: 3 },
-  { id: 'kinder', label: 'Kinder / Day Care', discount: 0.2, amount: 7, fuelAdd: 2 }
+  { id: 'pwd', label: 'PWD', discount: 0.2, amount: 3, fuelAdd: 4 }
 ];
 const ZONE_TOLERANCE_KM = 0.06;
 

@@ -1,5 +1,5 @@
 // Service worker
-const CACHE = 'koronadal-ride-v11';
+const CACHE = 'koronadal-ride-v12';
 const SHELL = [
   './', './index.html', './styles.css', './app.js', './data.js',
   './vendor/leaflet.js', './vendor/leaflet.css', './vendor/supabase.js', './supabase.js', './manifest.webmanifest',
