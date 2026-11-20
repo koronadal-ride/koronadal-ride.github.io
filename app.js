@@ -1959,7 +1959,9 @@
     const zoneFare = (t) => Math.max(0, tri.base - (t.amount || 0)) + level * (t.fuelAdd || 0);
     screenEl.innerHTML = `
       <h1>Tricycle fare ordinance</h1>
-      <p class="lead">The official fare rules for tricycles-for-hire in the City of Koronadal, as used by this app.</p>
+      <p class="lead">City Ordinance No. 18, Series of 2026: the official fare rules for tricycles-for-hire in the City of Koronadal, as used by this app.</p>
+      <img src="./ordinance-18-2026.jpg" alt="Ordinance No. 18, Series of 2026, City of Koronadal: an ordinance prescribing the provisional rates of fare for tricycles-for-hire" width="1200" height="1006" style="display:block;width:100%;height:auto;border-radius:16px;margin:0 0 10px" />
+      <a class="btn secondary" href="https://www.facebook.com/share/p/1A2rVUywcE/" target="_blank" rel="noopener" style="display:flex;text-decoration:none;box-sizing:border-box;text-align:center;margin:0 0 14px">View the official post on Facebook</a>
       <div class="card">
         <div class="card-title">Downtown Base-Fare Zone</div>
         <p class="small" style="margin:0 0 10px">Inside this zone the tricycle fare is the same no matter how far you travel. The zone is the dashed outline on the map.</p>
@@ -2001,7 +2003,7 @@
           <li>A tricycle with no fare matrix posted is fined ₱500.</li>
         </ul>
       </div>
-      <p class="small muted">Source: tricycle-for-hire fare ordinance of the City Government of Koronadal. This page is a summary; the ordinance itself is the authority.</p>`;
+      <p class="small muted">Source: Ordinance No. 18, Series of 2026, "An Ordinance Prescribing the Provisional Rates of Fare for Tricycles-for-Hire within the Territorial Jurisdiction of the City of Koronadal, Providing the Guidelines for Its Implementation and the Penalties for Violation Thereof", City Government of Koronadal. This page is a summary; the ordinance itself is the authority.</p>`;
     const view = createMap($('#map'), { onPick: () => {}, pickLabel: 'Close', scrollWheelZoom: false, showZone: true });
     setTimeout(() => {
       view.map.invalidateSize();
