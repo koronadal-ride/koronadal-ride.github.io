@@ -109,7 +109,8 @@
     clear: () => store.remove(userKey('draft'))
   };
   const HIDDEN_TYPES = ['elementary', 'kinder'];
-  const passengerTypes = () => (D.DISCOUNTS && D.DISCOUNTS.length ? D.DISCOUNTS : D.DEFAULT_DISCOUNTS).filter((t) => !HIDDEN_TYPES.includes(t.id));
+  const passengerTypes = () => (D.DISCOUNTS && D.DISCOUNTS.length ? D.DISCOUNTS : D.DEFAULT_DISCOUNTS).filter((t) => !HIDDEN_TYPES.includes(t.id))
+    .map((t) => (t.id === 'student' && /high school/i.test(t.label || '') ? { ...t, label: 'Student' } : t));
   const isPrivileged = (t) => !!t && (t.discount > 0 || t.amount > 0);
   const Settings = {
     get: () => ({ passenger: 'regular', people: 1, discounted: 1, ...store.get(userKey('settings'), {}) }),
